@@ -1,0 +1,124 @@
+# =============================================================================
+# Letras Sync — .gitignore
+# =============================================================================
+
+# -----------------------------------------------------------------------------
+# Rust / Cargo
+# -----------------------------------------------------------------------------
+/target/
+Cargo.lock
+
+# Arquivos gerados por benchmarks
+**/*.rs.bk
+
+# SQLx — cache de queries compiladas (gerado por `cargo sqlx prepare`)
+.sqlx/
+
+# -----------------------------------------------------------------------------
+# Banco de dados local (gerado em runtime)
+# -----------------------------------------------------------------------------
+*.db
+*.db-shm
+*.db-wal
+*.sqlite
+*.sqlite3
+
+# -----------------------------------------------------------------------------
+# Configuração e dados locais (gerados em runtime pela aplicação)
+# -----------------------------------------------------------------------------
+config.toml
+cache/
+
+# Arquivos de áudio/media baixados pelo yt-dlp
+*.mp3
+*.mp4
+*.webm
+*.m4a
+*.opus
+*.ogg
+*.wav
+
+# Arquivos de legenda
+*.srt
+*.vtt
+*.lrc
+*.ass
+*.ssa
+
+# -----------------------------------------------------------------------------
+# Sistemas Operacionais
+# -----------------------------------------------------------------------------
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+._*
+
+# Windows
+Thumbs.db
+Thumbs.db:encryptable
+ehthumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+*.lnk
+
+# Linux
+*~
+.directory
+
+# -----------------------------------------------------------------------------
+# IDEs e Editores
+# -----------------------------------------------------------------------------
+
+# VS Code
+.vscode/
+!.vscode/extensions.json
+!.vscode/settings.json
+
+# JetBrains (CLion, IntelliJ, RustRover)
+.idea/
+*.iml
+*.iws
+*.ipr
+
+# Vim / Neovim
+*.swp
+*.swo
+[._]*.s[a-v][a-z]
+[._]*.sw[a-p]
+Session.vim
+.netrwhist
+tags
+
+# Emacs
+*~
+\#*\#
+/.emacs.desktop
+/.emacs.desktop.lock
+*.elc
+auto-save-list
+tramp
+.\#*
+
+# Sublime Text
+*.tmlanguage.cache
+*.tmPreferences.cache
+*.stTheme.cache
+*.sublime-workspace
+
+# -----------------------------------------------------------------------------
+# Logs e temporários
+# -----------------------------------------------------------------------------
+*.log
+*.tmp
+*.temp
+/logs/
+/tmp/
+
+# -----------------------------------------------------------------------------
+# Variáveis de ambiente
+# -----------------------------------------------------------------------------
+.env
+.env.*
+!.env.example
