@@ -51,6 +51,46 @@ impl YoutubeService {
         })
     }
 
+    /// Baixa apenas o áudio da `url` e o salva em `output_path` (formato mp3).
+    ///
+    /// Invoca o executável `yt-dlp` de forma assíncrona extraindo somente o
+    /// áudio. O `output_path` é usado como template de saída (`-o`) e deve
+    /// incluir a extensão `.mp3` desejada.
+    pub async fn download_audio(&self, url: &str, output_path: &std::path::Path) -> Result<()> {
+        tracing::info!(
+            "iniciando download de áudio de {url} para {}",
+            output_path.display()
+        );
+
+        let output = Command::new("yt-dlp")
+            .args([
+                "-x",
+                "--audio-format",
+                "mp3",
+                "--audio-quality",
+                "0",
+                "--no-playlist",
+                "-o",
+            ])
+            .arg(output_path)
+            .arg(url)
+            .output()
+            .await
+            .context("failed to execute yt-dlp (is it installed and in PATH?)")?;
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            bail!(
+                "yt-dlp exited with status {}: {}",
+                output.status,
+                stderr.trim()
+            );
+        }
+
+        tracing::info!("download de áudio concluído em {}", output_path.display());
+        Ok(())
+    }
+
     pub async fn fetch_captions(&self, video_id: &str) -> Result<Option<String>> {
         let temp_dir = std::env::temp_dir();
         let output_template = temp_dir.join(video_id);
@@ -110,5 +150,39 @@ impl YoutubeService {
             Ok(text) => Ok(Some(text)),
             Err(_) => Ok(None),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Verifica se o executável `yt-dlp` está disponível no ambiente.
+    async fn yt_dlp_available() -> bool {
+        Command::new("yt-dlp")
+            .arg("--version")
+            .output()
+            .await
+            .map(|o| o.status.success())
+            .unwrap_or(false)
+    }
+
+    // Depende do `yt-dlp`. Quando não está disponível no ambiente, o teste é
+    // encerrado graciosamente sem falhar.
+    #[tokio::test]
+    async fn download_audio_fails_on_invalid_url() {
+        if !yt_dlp_available().await {
+            return;
+        }
+
+        let service = YoutubeService::new();
+        let output_path = std::env::temp_dir().join("letras_sync_download_test.mp3");
+
+        let result = service
+            .download_audio("https://youtu.be/________invalid", &output_path)
+            .await;
+
+        assert!(result.is_err());
+        let _ = tokio::fs::remove_file(&output_path).await;
     }
 }
