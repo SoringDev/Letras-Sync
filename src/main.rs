@@ -27,5 +27,7 @@ async fn main() -> anyhow::Result<()> {
     infrastructure::database::Database::new().await?;
     tracing::info!("Banco de dados conectado e migrações aplicadas com sucesso.");
 
+    presentation::ui::run_test_window()?;
+
     Ok(())
 }
