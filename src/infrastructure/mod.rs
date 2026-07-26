@@ -6,3 +6,4 @@ pub mod lyrics_repository;
 pub mod audio;
 pub mod cache;
 pub mod logging;
+pub mod whisper;

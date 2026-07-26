@@ -9,6 +9,7 @@ use crate::domain::lyrics::LyricsLine;
 use crate::domain::music::Music;
 use crate::infrastructure::audio::AudioEngine;
 use crate::infrastructure::music_repository::MusicRepository;
+use crate::infrastructure::whisper::WhisperService;
 use crate::infrastructure::youtube::YoutubeService;
 
 use super::lyrics_service::LyricsService;
@@ -73,6 +74,7 @@ pub struct Player {
     audio_engine: Arc<AudioEngine>,
     youtube_service: Arc<YoutubeService>,
     lyrics_service: Arc<LyricsService>,
+    whisper_service: Arc<WhisperService>,
     pool: SqlitePool,
     state: Arc<RwLock<PlayerState>>,
     event_tx: broadcast::Sender<PlayerEvent>,
@@ -84,6 +86,7 @@ impl Player {
         audio_engine: Arc<AudioEngine>,
         youtube_service: Arc<YoutubeService>,
         lyrics_service: Arc<LyricsService>,
+        whisper_service: Arc<WhisperService>,
         pool: SqlitePool,
     ) -> Arc<Self> {
         let (event_tx, _) = broadcast::channel(EVENT_CHANNEL_CAPACITY);
@@ -92,6 +95,7 @@ impl Player {
             audio_engine,
             youtube_service,
             lyrics_service,
+            whisper_service,
             pool,
             state: Arc::new(RwLock::new(PlayerState::default())),
             event_tx,
@@ -120,18 +124,19 @@ impl Player {
         let music = self.resolve_music(url).await?;
         let music_id = music.id.clone();
 
+        self.set_status(PlaybackState::Loading).await;
+
+        let local_path = self.ensure_cached_audio(url, &video_id).await?;
+
         let lyrics = self
             .lyrics_service
-            .get_lyrics(&music_id, url)
+            .get_lyrics(&music_id, url, Some(&local_path))
             .await
             .unwrap_or_else(|e| {
                 tracing::warn!("falha ao obter as letras da música {video_id}: {e}");
                 Vec::new()
             });
 
-        self.set_status(PlaybackState::Loading).await;
-
-        let local_path = self.ensure_cached_audio(url, &video_id).await?;
         self.audio_engine.load(&local_path.to_string_lossy())?;
 
         {
@@ -394,8 +399,13 @@ mod tests {
             Err(_) => return None,
         };
         let youtube = Arc::new(YoutubeService::new());
-        let lyrics = Arc::new(LyricsService::new(pool.clone(), Arc::clone(&youtube)));
-        Some(Player::new(audio_engine, youtube, lyrics, pool))
+        let whisper = Arc::new(WhisperService::new());
+        let lyrics = Arc::new(LyricsService::new(
+            pool.clone(),
+            Arc::clone(&youtube),
+            Arc::clone(&whisper),
+        ));
+        Some(Player::new(audio_engine, youtube, lyrics, whisper, pool))
     }
 
     #[tokio::test]

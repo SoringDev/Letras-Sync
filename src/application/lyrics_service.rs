@@ -7,6 +7,7 @@ use serde::Deserialize;
 use crate::domain::lyrics::LyricsLine;
 use crate::infrastructure::lyrics_repository::LyricsRepository;
 use crate::infrastructure::providers::{lrc_parser, vtt_parser};
+use crate::infrastructure::whisper::WhisperService;
 use crate::infrastructure::youtube::YoutubeService;
 
 use sqlx::sqlite::SqlitePool;
@@ -23,17 +24,27 @@ struct LrclibResult {
 pub struct LyricsService {
     pool: SqlitePool,
     youtube: Arc<YoutubeService>,
+    whisper: Arc<WhisperService>,
 }
 
 impl LyricsService {
-    pub fn new(pool: SqlitePool, youtube: Arc<YoutubeService>) -> Self {
-        Self { pool, youtube }
+    pub fn new(
+        pool: SqlitePool,
+        youtube: Arc<YoutubeService>,
+        whisper: Arc<WhisperService>,
+    ) -> Self {
+        Self {
+            pool,
+            youtube,
+            whisper,
+        }
     }
 
     pub async fn get_lyrics(
         &self,
         music_id: &str,
         youtube_url: &str,
+        audio_path: Option<&std::path::Path>,
     ) -> Result<Vec<LyricsLine>> {
         let repository = LyricsRepository::new(&self.pool);
 
@@ -74,7 +85,18 @@ impl LyricsService {
             Err(e) => tracing::warn!("falha ao consultar o LRCLib: {e}"),
         }
 
-        // 4. Fallback stub (Whisper ainda não implementado).
+        // 4. Fallback com IA (Whisper): transcreve o áudio local, se houver.
+        if let Some(path) = audio_path {
+            match self.whisper.transcribe(path, music_id).await {
+                Ok(lines) if !lines.is_empty() => {
+                    self.persist(&repository, &lines).await;
+                    return Ok(lines);
+                }
+                Ok(_) => {}
+                Err(e) => tracing::warn!("falha na transcrição do Whisper: {e}"),
+            }
+        }
+
         tracing::warn!("nenhum provider encontrou letras para a música {music_id}");
         Ok(Vec::new())
     }
