@@ -46,6 +46,7 @@ impl LyricsService {
         music_id: &str,
         youtube_url: &str,
         audio_path: Option<&std::path::Path>,
+        on_status: &(dyn Fn(&str) + Send + Sync),
     ) -> Result<Vec<LyricsLine>> {
         let repository = LyricsRepository::new(&self.pool);
 
@@ -92,6 +93,7 @@ impl LyricsService {
 
         // 4. Fallback com IA (Whisper): transcreve o áudio local, se houver.
         if let Some(path) = audio_path {
+            on_status("Gerando sincronização de letras via IA Whisper (isso pode demorar)...");
             match self.whisper.transcribe(path, music_id).await {
                 Ok(lines) if !lines.is_empty() => {
                     self.persist(&repository, &lines).await;

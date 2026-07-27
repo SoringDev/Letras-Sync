@@ -6,6 +6,7 @@ use sqlx::sqlite::SqlitePool;
 use tokio::sync::broadcast;
 
 use crate::application::player::{PlaybackState, Player, PlayerEvent};
+use crate::application::playlist::Playlist;
 use crate::application::timeline::{Timeline, TimelineEvent};
 use crate::domain::music::Music;
 use crate::domain::settings::Settings;
@@ -71,6 +72,12 @@ pub struct AppController {
     error_message: qt_property!(QString; NOTIFY error_message_changed),
     error_message_changed: qt_signal!(),
 
+    loading_status: qt_property!(QString; NOTIFY loading_status_changed),
+    loading_status_changed: qt_signal!(),
+
+    playlist: qt_property!(QVariantList; NOTIFY playlist_changed),
+    playlist_changed: qt_signal!(),
+
     font_size: qt_property!(u32; NOTIFY style_changed),
     font_family: qt_property!(QString; NOTIFY style_changed),
     font_color: qt_property!(QString; NOTIFY style_changed),
@@ -82,40 +89,118 @@ pub struct AppController {
     history_changed: qt_signal!(),
 
     load_music: qt_method!(fn load_music(&mut self, url: QString) {
+        self.load_url(url.to_string());
+    }),
+
+    add_to_playlist: qt_method!(fn add_to_playlist(&mut self, url: QString) {
         let Some(player) = self.player.clone() else {
             return;
         };
-        self.error_message = QString::default();
-        self.error_message_changed();
-        self.loading = true;
-        self.loading_changed();
+        let Some(playlist) = self.playlist_handle.clone() else {
+            return;
+        };
 
         let qptr = QPointer::from(&*self);
         let refresh = queued_callback(move |()| {
             if let Some(pinned) = qptr.as_pinned() {
-                pinned.borrow().spawn_history_refresh();
-            }
-        });
-
-        let qptr_err = QPointer::from(&*self);
-        let show_error = queued_callback(move |msg: String| {
-            if let Some(pinned) = qptr_err.as_pinned() {
-                let mut this = pinned.borrow_mut();
-                this.error_message = QString::from(msg.as_str());
-                this.error_message_changed();
-                this.loading = false;
-                this.loading_changed();
+                pinned.borrow().spawn_playlist_refresh();
             }
         });
 
         let url = url.to_string();
         tokio::spawn(async move {
-            match player.load_youtube(&url).await {
-                Ok(()) => refresh(()),
-                Err(err) => {
-                    tracing::error!("falha ao carregar a música {url}: {err:?}");
-                    show_error(format!("Erro ao carregar: {err}"));
+            match player.resolve_music(&url).await {
+                Ok(music) => {
+                    playlist.add(music).await;
+                    refresh(());
                 }
+                Err(err) => {
+                    tracing::error!("falha ao resolver a música para a playlist {url}: {err:?}")
+                }
+            }
+        });
+    }),
+
+    remove_from_playlist: qt_method!(fn remove_from_playlist(&mut self, index: i32) {
+        let Some(playlist) = self.playlist_handle.clone() else {
+            return;
+        };
+        if index < 0 {
+            return;
+        }
+        let index = index as usize;
+
+        let qptr = QPointer::from(&*self);
+        let refresh = queued_callback(move |()| {
+            if let Some(pinned) = qptr.as_pinned() {
+                pinned.borrow().spawn_playlist_refresh();
+            }
+        });
+
+        tokio::spawn(async move {
+            playlist.remove(index).await;
+            refresh(());
+        });
+    }),
+
+    play_playlist_item: qt_method!(fn play_playlist_item(&mut self, index: i32) {
+        let Some(playlist) = self.playlist_handle.clone() else {
+            return;
+        };
+        if index < 0 {
+            return;
+        }
+        let index = index as usize;
+
+        let qptr = QPointer::from(&*self);
+        let start = queued_callback(move |url: String| {
+            if let Some(pinned) = qptr.as_pinned() {
+                pinned.borrow_mut().load_url(url);
+            }
+        });
+
+        tokio::spawn(async move {
+            playlist.set_current_index(Some(index)).await;
+            if let Some(music) = playlist.current_music().await {
+                start(music.youtube_url);
+            }
+        });
+    }),
+
+    play_next: qt_method!(fn play_next(&mut self) {
+        let Some(playlist) = self.playlist_handle.clone() else {
+            return;
+        };
+
+        let qptr = QPointer::from(&*self);
+        let start = queued_callback(move |url: String| {
+            if let Some(pinned) = qptr.as_pinned() {
+                pinned.borrow_mut().load_url(url);
+            }
+        });
+
+        tokio::spawn(async move {
+            if let Some(music) = playlist.next().await {
+                start(music.youtube_url);
+            }
+        });
+    }),
+
+    play_previous: qt_method!(fn play_previous(&mut self) {
+        let Some(playlist) = self.playlist_handle.clone() else {
+            return;
+        };
+
+        let qptr = QPointer::from(&*self);
+        let start = queued_callback(move |url: String| {
+            if let Some(pinned) = qptr.as_pinned() {
+                pinned.borrow_mut().load_url(url);
+            }
+        });
+
+        tokio::spawn(async move {
+            if let Some(music) = playlist.prev().await {
+                start(music.youtube_url);
             }
         });
     }),
@@ -233,6 +318,7 @@ pub struct AppController {
 
     player: Option<Arc<Player>>,
     timeline: Option<Arc<Timeline>>,
+    playlist_handle: Option<Arc<Playlist>>,
     pool: Option<SqlitePool>,
     settings: Settings,
 }
@@ -240,7 +326,13 @@ pub struct AppController {
 impl AppController {
     /// Cria o controlador já populado com o estado de estilo das configurações.
     #[allow(clippy::field_reassign_with_default)]
-    fn new(player: Arc<Player>, timeline: Arc<Timeline>, pool: SqlitePool, settings: &Settings) -> Self {
+    fn new(
+        player: Arc<Player>,
+        timeline: Arc<Timeline>,
+        playlist: Arc<Playlist>,
+        pool: SqlitePool,
+        settings: &Settings,
+    ) -> Self {
         let mut controller = AppController::default();
         controller.playback_state = QString::from(playback_state_label(PlaybackState::Idle));
         controller.font_size = settings.font_size;
@@ -251,6 +343,7 @@ impl AppController {
             settings.projector_monitor.map(|m| m as i32).unwrap_or(-1);
         controller.player = Some(player);
         controller.timeline = Some(timeline);
+        controller.playlist_handle = Some(playlist);
         controller.pool = Some(pool);
         controller.settings = settings.clone();
         controller
@@ -261,6 +354,91 @@ impl AppController {
         if let Err(err) = crate::shared::config::save_settings(&self.settings) {
             tracing::error!("falha ao salvar as configurações: {err:?}");
         }
+    }
+
+    /// Inicia o carregamento e a reprodução da mídia da `url`.
+    ///
+    /// Limpa o estado de erro/status, sinaliza o carregamento e delega ao
+    /// `Player` em uma tarefa de segundo plano, propagando eventuais falhas ao
+    /// QML pelo mesmo padrão `QPointer` + `queued_callback`.
+    fn load_url(&mut self, url: String) {
+        let Some(player) = self.player.clone() else {
+            return;
+        };
+        self.error_message = QString::default();
+        self.error_message_changed();
+        self.loading_status = QString::default();
+        self.loading_status_changed();
+        self.loading = true;
+        self.loading_changed();
+
+        let qptr = QPointer::from(&*self);
+        let refresh = queued_callback(move |()| {
+            if let Some(pinned) = qptr.as_pinned() {
+                pinned.borrow().spawn_history_refresh();
+            }
+        });
+
+        let qptr_err = QPointer::from(&*self);
+        let show_error = queued_callback(move |msg: String| {
+            if let Some(pinned) = qptr_err.as_pinned() {
+                let mut this = pinned.borrow_mut();
+                this.error_message = QString::from(msg.as_str());
+                this.error_message_changed();
+                this.loading = false;
+                this.loading_changed();
+            }
+        });
+
+        tokio::spawn(async move {
+            match player.load_youtube(&url).await {
+                Ok(()) => refresh(()),
+                Err(err) => {
+                    tracing::error!("falha ao carregar a música {url}: {err:?}");
+                    show_error(format!("Erro ao carregar: {err}"));
+                }
+            }
+        });
+    }
+
+    /// Recarrega a fila de reprodução exposta ao QML em segundo plano.
+    ///
+    /// Segue o mesmo padrão de `spawn_history_refresh`: a leitura ocorre em uma
+    /// tarefa tokio e a `QVariantList` é montada na thread do Qt.
+    fn spawn_playlist_refresh(&self) {
+        let Some(playlist) = self.playlist_handle.clone() else {
+            return;
+        };
+        let qptr = QPointer::from(self);
+
+        let apply = queued_callback(move |items: Vec<Music>| {
+            let Some(pinned) = qptr.as_pinned() else {
+                return;
+            };
+            let mut this = pinned.borrow_mut();
+            let mut list = QVariantList::default();
+            for music in items {
+                let mut map = QVariantMap::default();
+                map.insert("id".into(), QString::from(music.id.as_str()).into());
+                map.insert("title".into(), QString::from(music.title.as_str()).into());
+                map.insert(
+                    "artist".into(),
+                    QString::from(music.artist.unwrap_or_default().as_str()).into(),
+                );
+                map.insert(
+                    "youtube_url".into(),
+                    QString::from(music.youtube_url.as_str()).into(),
+                );
+                list.push(map.into());
+            }
+            this.playlist = list;
+            this.playlist_changed();
+        });
+
+        tokio::spawn(async move {
+            let items = playlist.get_items().await;
+            apply(items);
+        });
     }
 
     /// Recarrega o histórico de músicas do banco em segundo plano.
@@ -366,6 +544,11 @@ impl AppController {
                 PlayerEvent::PlaybackFinished => {
                     this.current_time = 0.0;
                     this.current_time_changed();
+                    this.play_next();
+                }
+                PlayerEvent::LoadingStatus(status) => {
+                    this.loading_status = QString::from(status.as_str());
+                    this.loading_status_changed();
                 }
             }
         });
@@ -419,6 +602,7 @@ impl AppController {
 pub fn run_operator_ui(
     player: Arc<Player>,
     timeline: Arc<Timeline>,
+    playlist: Arc<Playlist>,
     pool: SqlitePool,
     settings: Settings,
 ) -> anyhow::Result<()> {
@@ -432,7 +616,8 @@ pub fn run_operator_ui(
 
     register_qml_resources();
 
-    let controller = QObjectBox::new(AppController::new(player, timeline, pool, &settings));
+    let controller =
+        QObjectBox::new(AppController::new(player, timeline, playlist, pool, &settings));
     let pinned = controller.pinned();
 
     let mut engine = QmlEngine::new();

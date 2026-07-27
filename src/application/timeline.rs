@@ -96,7 +96,7 @@ impl Timeline {
             PlayerEvent::PositionUpdated { position, .. } => {
                 self.update_active_line(position).await;
             }
-            PlayerEvent::StateChanged(_) => {}
+            PlayerEvent::StateChanged(_) | PlayerEvent::LoadingStatus(_) => {}
         }
     }
 

@@ -46,6 +46,7 @@ pub enum PlayerEvent {
         duration: Option<f64>,
     },
     PlaybackFinished,
+    LoadingStatus(String),
 }
 
 /// Estado interno compartilhado do player.
@@ -113,6 +114,9 @@ impl Player {
         let video_id = extract_video_id(url)
             .ok_or_else(|| anyhow::anyhow!("não foi possível extrair o video_id da URL: {url}"))?;
 
+        self.emit(PlayerEvent::LoadingStatus(
+            "Buscando metadados da música...".to_string(),
+        ));
         let music = self.resolve_music(url).await?;
         let music_id = music.id.clone();
 
@@ -120,9 +124,14 @@ impl Player {
 
         let local_path = self.ensure_cached_audio(url, &video_id).await?;
 
-        let lyrics = self
-            .lyrics_service
-            .get_lyrics(&music_id, url, Some(&local_path))
+        self.emit(PlayerEvent::LoadingStatus(
+            "Buscando legendas sincronizadas...".to_string(),
+        ));
+        let lyrics_service = self.lyrics_service.clone();
+        let lyrics = lyrics_service
+            .get_lyrics(&music_id, url, Some(&local_path), &|status| {
+                self.emit(PlayerEvent::LoadingStatus(status.to_string()));
+            })
             .await
             .unwrap_or_else(|e| {
                 tracing::warn!("falha ao obter as letras da música {video_id}: {e}");
@@ -205,6 +214,10 @@ impl Player {
         let settings = crate::shared::config::load_settings()?;
         let cache_dir = std::path::Path::new(&settings.cache_path);
 
+        self.emit(PlayerEvent::LoadingStatus(
+            "Verificando arquivos de áudio locais...".to_string(),
+        ));
+
         tokio::fs::create_dir_all(cache_dir)
             .await
             .with_context(|| {
@@ -233,6 +246,10 @@ impl Player {
 
         tracing::info!("cache miss: baixando áudio de {video_id}");
 
+        self.emit(PlayerEvent::LoadingStatus(
+            "Baixando áudio do YouTube (isso pode demorar)...".to_string(),
+        ));
+
         if let Err(e) = self
             .youtube_service
             .download_audio(url, &local_path)
@@ -246,7 +263,7 @@ impl Player {
     }
 
     /// Obtém a música do cache local ou, na ausência, dos metadados do YouTube.
-    async fn resolve_music(&self, url: &str) -> Result<Music> {
+    pub async fn resolve_music(&self, url: &str) -> Result<Music> {
         let repository = MusicRepository::new(&self.pool);
 
         if let Some(music) = repository.find_by_youtube_url(url).await? {

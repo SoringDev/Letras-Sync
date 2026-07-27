@@ -10,6 +10,7 @@ use anyhow::Context;
 
 use application::lyrics_service::LyricsService;
 use application::player::Player;
+use application::playlist::Playlist;
 use application::timeline::Timeline;
 use infrastructure::audio::AudioEngine;
 use infrastructure::database::Database;
@@ -54,8 +55,9 @@ async fn main() -> anyhow::Result<()> {
 
     let player = Player::new(audio_engine, youtube, lyrics, pool.clone());
     let timeline = Timeline::new(Arc::clone(&player));
+    let playlist = Arc::new(Playlist::new());
 
-    presentation::ui::run_operator_ui(player, timeline, pool, settings)?;
+    presentation::ui::run_operator_ui(player, timeline, playlist, pool, settings)?;
 
     Ok(())
 }

@@ -34,6 +34,10 @@ ApplicationWindow {
             }
 
             TabButton {
+                text: "Playlist"
+            }
+
+            TabButton {
                 text: "Estilo"
             }
         }
@@ -79,7 +83,9 @@ ApplicationWindow {
                     }
 
                     Label {
-                        text: "Carregando..."
+                        text: appController.loading_status.length > 0
+                            ? appController.loading_status
+                            : "Carregando..."
                     }
                 }
 
@@ -148,6 +154,11 @@ ApplicationWindow {
                             }
 
                             Button {
+                                text: "+"
+                                onClicked: appController.add_to_playlist(modelData.youtube_url)
+                            }
+
+                            Button {
                                 text: "✕"
                                 onClicked: {
                                     appController.clear_lyrics(modelData.youtube_url)
@@ -184,6 +195,11 @@ ApplicationWindow {
                     spacing: 8
 
                     Button {
+                        text: "⏮"
+                        onClicked: appController.play_previous()
+                    }
+
+                    Button {
                         text: "Play"
                         enabled: appController.playback_state !== "Playing" && operatorWindow.hasMusic
                         onClicked: appController.play()
@@ -199,6 +215,11 @@ ApplicationWindow {
                         text: "Stop"
                         enabled: operatorWindow.hasMusic
                         onClicked: appController.stop()
+                    }
+
+                    Button {
+                        text: "⏭"
+                        onClicked: appController.play_next()
                     }
 
                     Button {
@@ -242,6 +263,70 @@ ApplicationWindow {
 
                     Label {
                         text: formatTime(appController.duration)
+                    }
+                }
+            }
+
+            // Aba "Playlist"
+            ColumnLayout {
+                Layout.fillWidth: true
+                Layout.fillHeight: true
+                spacing: 12
+
+                Label {
+                    text: "Fila de reprodução"
+                    font.bold: true
+                }
+
+                Label {
+                    Layout.fillWidth: true
+                    text: "Nenhuma música na fila"
+                    color: "#666666"
+                    visible: appController.playlist.length === 0
+                }
+
+                ListView {
+                    Layout.fillWidth: true
+                    Layout.fillHeight: true
+                    clip: true
+                    spacing: 4
+                    visible: appController.playlist.length > 0
+                    model: appController.playlist
+
+                    delegate: RowLayout {
+                        width: ListView.view.width
+                        spacing: 8
+
+                        Button {
+                            text: "▶"
+                            onClicked: appController.play_playlist_item(index)
+                        }
+
+                        Button {
+                            text: "✕"
+                            onClicked: appController.remove_from_playlist(index)
+                        }
+
+                        ColumnLayout {
+                            Layout.fillWidth: true
+                            spacing: 0
+
+                            Label {
+                                Layout.fillWidth: true
+                                text: modelData.title
+                                font.bold: true
+                                elide: Text.ElideRight
+                            }
+
+                            Label {
+                                Layout.fillWidth: true
+                                text: modelData.artist
+                                font.pixelSize: 12
+                                color: "#666666"
+                                visible: modelData.artist.length > 0
+                                elide: Text.ElideRight
+                            }
+                        }
                     }
                 }
             }
