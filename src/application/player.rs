@@ -970,6 +970,21 @@ mod tests {
         let uri = format!("file://{}", path.display());
         let canonical = std::fs::canonicalize(&path).expect("canonical path");
         let expected_id = local_music_id(&canonical);
+        let music = Music {
+            id: expected_id.clone(),
+            title: "letras_sync_local_load_test".to_string(),
+            artist: Some(LOCAL_ARTIST_NAME.to_string()),
+            youtube_url: canonical.to_string_lossy().to_string(),
+            duration: None,
+            thumbnail: None,
+            created_at: None,
+            has_lyrics: None,
+        };
+
+        MusicRepository::new(&pool)
+            .save(&music)
+            .await
+            .expect("seed local music");
 
         LyricsRepository::new(&pool)
             .save_all(&[LyricsLine {

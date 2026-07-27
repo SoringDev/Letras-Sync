@@ -6,7 +6,7 @@ edition = "2024"
 [dependencies]
 anyhow = "1.0.104"
 directories = "6.0.0"
-libmpv = "2.0.1"
+libmpv-sys = "3.1.0"
 qmetaobject = "0.2.10"
 reqwest = { version = "0.12", features = ["json"] }
 serde = { version = "1.0.229", features = ["derive"] }
