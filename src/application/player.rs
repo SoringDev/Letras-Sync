@@ -2,6 +2,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::{Context, Result};
+use std::path::{Path, PathBuf};
 use sqlx::sqlite::SqlitePool;
 use tokio::sync::{RwLock, broadcast};
 
@@ -22,6 +23,9 @@ const POSITION_EPSILON: f64 = 0.01;
 
 /// Capacidade do canal de eventos reativos do player.
 const EVENT_CHANNEL_CAPACITY: usize = 64;
+
+/// Nome exibido para mídias carregadas do sistema de arquivos local.
+const LOCAL_ARTIST_NAME: &str = "Arquivo Local";
 
 /// Estados possíveis do ciclo de vida da reprodução.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -65,6 +69,91 @@ impl Default for PlayerState {
             current_lyrics: Vec::new(),
         }
     }
+}
+
+/// Tenta resolver uma entrada como mídia local existente.
+async fn resolve_local_media_path(input: &str) -> Result<Option<PathBuf>> {
+    let path = if let Some(raw) = input.strip_prefix("file://") {
+        Some(PathBuf::from(decode_file_uri_path(raw)))
+    } else {
+        let candidate = Path::new(input);
+        if tokio::fs::try_exists(candidate)
+            .await
+            .with_context(|| format!("falha ao verificar o caminho local {}", candidate.display()))?
+        {
+            Some(candidate.to_path_buf())
+        } else {
+            None
+        }
+    };
+
+    match path {
+        Some(path) => Ok(Some(
+            tokio::fs::canonicalize(&path)
+                .await
+                .with_context(|| format!("falha ao resolver o caminho local {}", path.display()))?,
+        )),
+        None => Ok(None),
+    }
+}
+
+/// Decodifica percent-encoding simples usado em `file://`.
+fn decode_file_uri_path(input: &str) -> String {
+    let mut bytes_out = Vec::with_capacity(input.len());
+    let bytes = input.as_bytes();
+    let mut i = 0;
+
+    while i < bytes.len() {
+        match bytes[i] {
+            b'%' if i + 2 < bytes.len() => {
+                let hi = bytes[i + 1];
+                let lo = bytes[i + 2];
+                if let (Some(hi), Some(lo)) = (from_hex_digit(hi), from_hex_digit(lo)) {
+                    bytes_out.push(hi * 16 + lo);
+                    i += 3;
+                } else {
+                    bytes_out.push(b'%');
+                    i += 1;
+                }
+            }
+            byte => {
+                bytes_out.push(byte);
+                i += 1;
+            }
+        }
+    }
+
+    String::from_utf8_lossy(&bytes_out).into_owned()
+}
+
+fn from_hex_digit(byte: u8) -> Option<u8> {
+    match byte {
+        b'0'..=b'9' => Some(byte - b'0'),
+        b'a'..=b'f' => Some(byte - b'a' + 10),
+        b'A'..=b'F' => Some(byte - b'A' + 10),
+        _ => None,
+    }
+}
+
+fn local_music_id(path: &Path) -> String {
+    let mut hash: u64 = 0xcbf29ce484222325;
+
+    for byte in path.to_string_lossy().as_bytes() {
+        hash ^= u64::from(*byte);
+        hash = hash.wrapping_mul(0x100000001b3);
+    }
+
+    format!("local-{hash:016x}")
+}
+
+async fn media_music_id(input: &str) -> Result<String> {
+    if let Some(path) = resolve_local_media_path(input).await? {
+        return Ok(local_music_id(&path));
+    }
+
+    extract_video_id(input)
+        .map(|id| id.to_string())
+        .ok_or_else(|| anyhow::anyhow!("não foi possível identificar a mídia informada: {input}"))
 }
 
 /// Serviço de controle e orquestração da reprodução.
@@ -122,8 +211,21 @@ impl Player {
         self.event_tx.subscribe()
     }
 
-    /// Carrega uma mídia do YouTube e inicia a reprodução.
+    /// Carrega uma mídia local ou do YouTube e inicia a reprodução.
     pub async fn load_youtube(&self, url: &str) -> Result<()> {
+        self.load_media(url).await
+    }
+
+    /// Carrega uma mídia local ou remota e inicia a reprodução.
+    pub async fn load_media(&self, input: &str) -> Result<()> {
+        if let Some(local_path) = resolve_local_media_path(input).await? {
+            return self.load_local_media(&local_path).await;
+        }
+
+        self.load_remote_youtube(input).await
+    }
+
+    async fn load_remote_youtube(&self, url: &str) -> Result<()> {
         let video_id = extract_video_id(url)
             .ok_or_else(|| anyhow::anyhow!("não foi possível extrair o video_id da URL: {url}"))?;
 
@@ -152,6 +254,50 @@ impl Player {
             });
 
         self.audio_engine.load(&local_path.to_string_lossy())?;
+
+        {
+            let mut state = self.state.write().await;
+            state.current_music = Some(music.clone());
+            state.current_lyrics = lyrics.clone();
+            state.status = PlaybackState::Playing;
+        }
+
+        self.emit(PlayerEvent::MusicLoaded { music, lyrics });
+        self.emit(PlayerEvent::StateChanged(PlaybackState::Playing));
+
+        Ok(())
+    }
+
+    async fn load_local_media(&self, local_path: &Path) -> Result<()> {
+        let music = self.resolve_local_music(local_path).await?;
+        let music_id = music.id.clone();
+        let canonical_path = PathBuf::from(&music.youtube_url);
+
+        self.set_status(PlaybackState::Loading).await;
+
+        self.emit(PlayerEvent::LoadingStatus(
+            "Buscando letras do arquivo local...".to_string(),
+        ));
+        let lyrics_service = self.lyrics_service.clone();
+        let lyrics = lyrics_service
+            .get_lyrics(
+                &music_id,
+                &music.youtube_url,
+                Some(&canonical_path),
+                &|status| {
+                    self.emit(PlayerEvent::LoadingStatus(status.to_string()));
+                },
+            )
+            .await
+            .unwrap_or_else(|e| {
+                tracing::warn!(
+                    "falha ao obter as letras do arquivo local {}: {e}",
+                    canonical_path.display()
+                );
+                Vec::new()
+            });
+
+        self.audio_engine.load(&canonical_path.to_string_lossy())?;
 
         {
             let mut state = self.state.write().await;
@@ -212,9 +358,7 @@ impl Player {
 
     /// Remove do cache local as letras associadas à mídia da `youtube_url`.
     pub async fn clear_lyrics_cache(&self, youtube_url: &str) -> Result<()> {
-        let music_id = extract_video_id(youtube_url).ok_or_else(|| {
-            anyhow::anyhow!("não foi possível extrair o video_id da URL: {youtube_url}")
-        })?;
+        let music_id = media_music_id(youtube_url).await?;
 
         self.lyrics_service.clear_cache(&music_id).await
     }
@@ -346,6 +490,41 @@ impl Player {
         Ok(music)
     }
 
+    async fn resolve_local_music(&self, canonical_path: &Path) -> Result<Music> {
+        let repository = MusicRepository::new(&self.pool);
+        let path_string = canonical_path.to_string_lossy().to_string();
+
+        if let Some(music) = repository.find_by_youtube_url(&path_string).await? {
+            return Ok(music);
+        }
+
+        let title = canonical_path
+            .file_stem()
+            .and_then(|stem| stem.to_str())
+            .unwrap_or("Arquivo Local")
+            .to_string();
+
+        let music = Music {
+            id: local_music_id(canonical_path),
+            title,
+            artist: Some(LOCAL_ARTIST_NAME.to_string()),
+            youtube_url: path_string,
+            duration: None,
+            thumbnail: None,
+            created_at: None,
+            has_lyrics: None,
+        };
+
+        if let Err(e) = repository.save(&music).await {
+            tracing::warn!(
+                "falha ao salvar o arquivo local {} no cache: {e}",
+                canonical_path.display()
+            );
+        }
+
+        Ok(music)
+    }
+
     /// Atualiza o status e propaga `StateChanged`.
     async fn set_status(&self, status: PlaybackState) {
         self.state.write().await.status = status;
@@ -441,6 +620,31 @@ mod tests {
         pool
     }
 
+    fn write_silent_wav(path: &std::path::Path) -> std::io::Result<()> {
+        let sample_rate: u32 = 16_000;
+        let num_samples: u32 = sample_rate / 10;
+        let data_len = num_samples * 2;
+        let file_len = 36 + data_len;
+
+        let mut bytes = Vec::with_capacity((44 + data_len) as usize);
+        bytes.extend_from_slice(b"RIFF");
+        bytes.extend_from_slice(&file_len.to_le_bytes());
+        bytes.extend_from_slice(b"WAVE");
+        bytes.extend_from_slice(b"fmt ");
+        bytes.extend_from_slice(&16u32.to_le_bytes());
+        bytes.extend_from_slice(&1u16.to_le_bytes());
+        bytes.extend_from_slice(&1u16.to_le_bytes());
+        bytes.extend_from_slice(&sample_rate.to_le_bytes());
+        bytes.extend_from_slice(&(sample_rate * 2).to_le_bytes());
+        bytes.extend_from_slice(&2u16.to_le_bytes());
+        bytes.extend_from_slice(&16u16.to_le_bytes());
+        bytes.extend_from_slice(b"data");
+        bytes.extend_from_slice(&data_len.to_le_bytes());
+        bytes.extend(std::iter::repeat(0u8).take(data_len as usize));
+
+        std::fs::write(path, bytes)
+    }
+
     fn build_player(pool: SqlitePool) -> Option<Arc<Player>> {
         let audio_engine = match AudioEngine::new() {
             Ok(engine) => Arc::new(engine),
@@ -461,6 +665,42 @@ mod tests {
             pool,
             settings.volume as i64,
         ))
+    }
+
+    #[test]
+    fn decode_file_uri_path_unescapes_spaces() {
+        assert_eq!(
+            decode_file_uri_path("/tmp/Meu%20Arquivo.wav"),
+            "/tmp/Meu Arquivo.wav"
+        );
+    }
+
+    #[test]
+    fn local_music_id_depends_on_absolute_path() {
+        let path_a = Path::new("/tmp/letras_sync_a.wav");
+        let path_b = Path::new("/tmp/letras_sync_b.wav");
+
+        assert_eq!(local_music_id(path_a), local_music_id(path_a));
+        assert_ne!(local_music_id(path_a), local_music_id(path_b));
+    }
+
+    #[tokio::test]
+    async fn resolve_local_media_path_accepts_file_uri_and_canonicalizes() {
+        let temp_dir = std::env::temp_dir();
+        let path = temp_dir.join("letras_sync_local_uri_test.wav");
+        if write_silent_wav(&path).is_err() {
+            return;
+        }
+
+        let uri = format!("file://{}", path.display());
+        let resolved = resolve_local_media_path(&uri)
+            .await
+            .expect("resolver file uri");
+
+        let canonical = std::fs::canonicalize(&path).expect("canonical");
+        let _ = std::fs::remove_file(&path);
+
+        assert_eq!(resolved, Some(canonical));
     }
 
     #[test]
@@ -712,5 +952,59 @@ mod tests {
         };
 
         assert!(player.load_youtube("not-a-url").await.is_err());
+    }
+
+    #[tokio::test]
+    async fn load_local_media_saves_music_and_uses_local_metadata() {
+        let pool = memory_pool().await;
+        let Some(player) = build_player(pool.clone()) else {
+            return;
+        };
+
+        let temp_dir = std::env::temp_dir();
+        let path = temp_dir.join("letras_sync_local_load_test.wav");
+        if write_silent_wav(&path).is_err() {
+            return;
+        }
+
+        let uri = format!("file://{}", path.display());
+        let canonical = std::fs::canonicalize(&path).expect("canonical path");
+        let expected_id = local_music_id(&canonical);
+
+        LyricsRepository::new(&pool)
+            .save_all(&[LyricsLine {
+                id: 0,
+                music_id: expected_id.clone(),
+                start_time: 0.0,
+                end_time: 1.0,
+                text: "linha local".to_string(),
+            }])
+            .await
+            .expect("seed local lyrics");
+
+        player.load_youtube(&uri).await.expect("load local file");
+
+        let repository = MusicRepository::new(&pool);
+        let stored = repository
+            .find_by_youtube_url(&canonical.to_string_lossy())
+            .await
+            .expect("find local music")
+            .expect("local music saved");
+
+        assert_eq!(stored.id, expected_id);
+        assert_eq!(stored.title, "letras_sync_local_load_test");
+        assert_eq!(stored.artist.as_deref(), Some(LOCAL_ARTIST_NAME));
+
+        {
+            let state = player.state.read().await;
+            let current = state.current_music.as_ref().expect("current music");
+            assert_eq!(current.id, expected_id);
+            assert_eq!(current.title, "letras_sync_local_load_test");
+            assert_eq!(current.artist.as_deref(), Some(LOCAL_ARTIST_NAME));
+            assert_eq!(state.current_lyrics.len(), 1);
+            assert_eq!(state.current_lyrics[0].text, "linha local");
+        }
+
+        let _ = std::fs::remove_file(&path);
     }
 }

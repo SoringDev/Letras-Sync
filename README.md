@@ -13,6 +13,53 @@ O objetivo principal é minimizar a intervenção de um operador na projeção d
 3. Se não encontrar letras, aciona o **faster-whisper** como fallback para ouvir o áudio e gerar a letra sincronizada.
 4. O áudio é reproduzido pelo libmpv enquanto a letra é projetada em tela cheia no segundo monitor (texto amarelo em fundo preto via QML).
 
+## ✨ Funcionalidades
+
+O **Letras Sync** conta com uma suíte de funcionalidades projetada para automatizar e simplificar a projeção de letras em tempo real:
+
+### 1. Obtenção e Cache de Mídia
+* **Integração com YouTube**: Basta colar a URL de um vídeo do YouTube para que o sistema processe e faça o download automático do áudio em segundo plano via `yt-dlp`.
+* **Metadados Automáticos**: Extração automática do título, artista e thumbnail da mídia.
+* **Cache Inteligente**: O áudio baixado é armazenado em formato `.mp3` localmente. Execuções subsequentes da mesma música utilizam o cache físico, eliminando a necessidade de internet.
+
+### 2. Motor de Letras Sincronizadas (Lyrics Engine)
+* **Múltiplos Provedores (Providers)**: Busca automática de letras sincronizadas através do YouTube Captions e da API do LRCLib.
+* **Fallback com Inteligência Artificial (Whisper)**: Caso a música não possua letras sincronizadas na internet, o sistema aciona o `faster-whisper` localmente para analisar o áudio e transcrever a letra com marcações de tempo precisas.
+* **Suporte a Múltiplos Formatos**: Compatibilidade com os formatos de legenda mais comuns: LRC, SRT e VTT.
+
+### 3. Painel do Operador e Controle de Playlist
+* **Player de Áudio Robusto**: Controle completo de reprodução (Play, Pause, Stop) acionado por botões e atalhos globais, integrado via `libmpv`.
+* **Navegação Temporal**: Barra de progresso interativa e botões de avanço/retrocesso rápido (+/- 10 segundos).
+* **Fila de Reprodução (Playlist)**: Adicione músicas à playlist ativa com suporte a avanço automático (*auto-advance*) de faixas.
+* **Histórico Persistente**: Histórico de reprodução salvo localmente com indicador visual do status de sincronismo ("Letra Salva" vs "Pendente Whisper").
+* **Busca e Filtro**: Campo de busca em tempo real para filtrar o histórico por título ou artista.
+
+### 4. Edição e Ajuste de Sincronismo
+* **Edição Rápida de Letras**: Permite que o operador corrija erros gramaticais ou ajuste textos da linha ativa em tempo real diretamente na interface, persistindo a alteração no banco imediatamente.
+* **Ajuste Fino de Offset**: Ferramenta para atrasar ou adiantar a exibição da letra em tempo real (+/- 0.5s) para garantir sincronia cirúrgica com o áudio.
+* **Limpeza de Cache**: Opção de forçar a limpeza do cache de letras de uma música específica para reiniciar o processo de busca ou transcrição.
+
+### 5. Projeção e Estilização
+* **Detecção de Segundo Monitor**: Direciona automaticamente a projeção em tela cheia para o monitor secundário (projetor ou TV) configurado.
+* **Visualização de Alto Contraste**: Fundo preto com texto amarelo puro para máxima legibilidade à distância.
+* **Modo Ocultar Texto (Clear Screen)**: Permite limpar o projetor instantaneamente (por exemplo, em momentos de silêncio na música) com um único clique ou pressionando a barra de espaço, mantendo o áudio tocando.
+* **Customização de Estilo**: Painel completo para ajustar o tamanho da fonte, família de fontes, cor do texto e cor de fundo da tela de projeção.
+* **Persistência de Estilo**: Configurações de estilo e tamanho de fonte são gravadas no disco e recarregadas automaticamente na próxima execução.
+
+### 6. Importação e Exportação
+* **Exportação Local**: Permite salvar a letra da música ativa em arquivos locais nos formatos `.lrc` ou `.srt`.
+* **Importação Local**: Permite carregar arquivos de sincronismo `.lrc`, `.srt` ou `.vtt` salvos no seu computador diretamente no banco de dados do aplicativo.
+
+### 7. Operação Ágil via Atalhos de Teclado
+* **Espaço**: Oculta ou exibe o texto no projetor (Clear Screen).
+* **Seta Esquerda / Seta Direita**: Retrocede ou avança 10 segundos no áudio.
+* **Seta Cima / Seta Baixo**: Ajusta o volume (+/- 5%).
+* **PageUp / PageDown**: Alterna para a música anterior ou posterior na playlist.
+* **Ctrl++ / Ctrl+-**: Aumenta ou diminui o tamanho da fonte da projeção.
+* **Esc**: Para a execução e limpa o player (Stop).
+
+---
+
 ## 💻 Stack Tecnológico (MVP)
 
 - **Linguagem:** Rust (Runtime Assíncrona: Tokio)

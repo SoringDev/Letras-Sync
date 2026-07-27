@@ -169,7 +169,7 @@ ApplicationWindow {
                     TextField {
                         id: urlField
                         Layout.fillWidth: true
-                        placeholderText: "Cole a URL do YouTube"
+                        placeholderText: "Cole a URL do YouTube ou caminho local"
                         selectByMouse: true
                     }
 
@@ -177,6 +177,23 @@ ApplicationWindow {
                         text: "Carregar"
                         enabled: urlField.text.length > 0 && !appController.loading
                         onClicked: appController.load_music(urlField.text)
+                    }
+
+                    Button {
+                        text: "Abrir Arquivo Local"
+                        enabled: !appController.loading
+                        onClicked: localAudioDialog.open()
+                    }
+                }
+
+                FileDialog {
+                    id: localAudioDialog
+                    title: "Abrir arquivo de áudio"
+                    fileMode: FileDialog.OpenFile
+                    nameFilters: ["Áudio (*.mp3 *.wav *.m4a *.ogg *.mp4)"]
+                    onAccepted: {
+                        urlField.text = selectedFile.toString()
+                        appController.load_music(urlField.text)
                     }
                 }
 
