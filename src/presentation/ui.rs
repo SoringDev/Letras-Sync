@@ -3,6 +3,7 @@ use std::sync::Arc;
 use qmetaobject::prelude::*;
 use qmetaobject::{queued_callback, QObjectBox, QPointer, QVariantList, QVariantMap};
 use sqlx::sqlite::SqlitePool;
+use tokio::fs;
 use tokio::sync::broadcast;
 
 use crate::application::player::{PlaybackState, Player, PlayerEvent};
@@ -11,6 +12,8 @@ use crate::application::timeline::{Timeline, TimelineEvent};
 use crate::domain::music::Music;
 use crate::domain::settings::Settings;
 use crate::infrastructure::music_repository::MusicRepository;
+use crate::infrastructure::providers::{lrc_parser, lyrics_export, srt_parser, vtt_parser};
+use crate::infrastructure::lyrics_repository::LyricsRepository;
 
 qrc!(register_qml_resources,
     "letras_sync/presentation" {
@@ -32,6 +35,14 @@ fn playback_state_label(state: PlaybackState) -> &'static str {
         PlaybackState::Playing => "Playing",
         PlaybackState::Paused => "Paused",
         PlaybackState::Stopped => "Stopped",
+    }
+}
+
+fn qml_path_to_pathbuf(file_path: &str) -> std::path::PathBuf {
+    if let Some(path) = file_path.strip_prefix("file://") {
+        std::path::PathBuf::from(path)
+    } else {
+        std::path::PathBuf::from(file_path)
     }
 }
 
@@ -89,6 +100,9 @@ pub struct AppController {
 
     current_lyrics: qt_property!(QVariantList; NOTIFY current_lyrics_changed),
     current_lyrics_changed: qt_signal!(),
+
+    current_music_id: qt_property!(QString; NOTIFY current_music_id_changed),
+    current_music_id_changed: qt_signal!(),
 
     active_line_id: qt_property!(i64; NOTIFY active_line_id_changed),
     active_line_id_changed: qt_signal!(),
@@ -337,6 +351,188 @@ pub struct AppController {
         });
     }),
 
+    export_lyrics: qt_method!(fn export_lyrics(&self, music_id: QString, file_path: QString, format: QString) -> bool {
+        let music_id = music_id.to_string();
+        let file_path = file_path.to_string();
+        let format = format.to_string().to_lowercase();
+        let qptr = QPointer::from(self);
+        let show_message = queued_callback(move |msg: String| {
+            if let Some(pinned) = qptr.as_pinned() {
+                let mut this = pinned.borrow_mut();
+                this.error_message = QString::from(msg.as_str());
+                this.error_message_changed();
+            }
+        });
+
+        if music_id.trim().is_empty() {
+            show_message("Erro: nenhuma música selecionada".to_string());
+            return false;
+        }
+
+        let Some(pool) = self.pool.clone() else {
+            show_message("Erro: banco de dados indisponível".to_string());
+            return false;
+        };
+
+        let format_name = match format.as_str() {
+            "lrc" => "LRC",
+            "srt" => "SRT",
+            _ => {
+                show_message("Erro: formato de exportação inválido".to_string());
+                return false;
+            }
+        };
+
+        let path = qml_path_to_pathbuf(&file_path);
+
+        tokio::spawn(async move {
+            let repository = LyricsRepository::new(&pool);
+            match repository.find_by_music_id(&music_id).await {
+                Ok(lines) => {
+                    let content = match format.as_str() {
+                        "lrc" => lyrics_export::format_lrc(&lines),
+                        "srt" => lyrics_export::format_srt(&lines),
+                        _ => String::new(),
+                    };
+
+                    if let Some(parent) = path.parent()
+                        && !parent.as_os_str().is_empty()
+                        && let Err(err) = fs::create_dir_all(parent).await
+                    {
+                        show_message(format!(
+                            "Erro: falha ao criar o diretório de destino: {err}"
+                        ));
+                        return;
+                    }
+
+                    if let Err(err) = fs::write(&path, content).await {
+                        show_message(format!("Erro: falha ao salvar o arquivo: {err}"));
+                        return;
+                    }
+
+                    show_message(format!("OK: Letras exportadas em {format_name}"));
+                }
+                Err(err) => {
+                    show_message(format!("Erro: falha ao exportar letras: {err}"));
+                }
+            }
+        });
+
+        true
+    }),
+
+    import_lyrics: qt_method!(fn import_lyrics(&mut self, music_id: QString, file_path: QString) -> bool {
+        let music_id = music_id.to_string();
+        let file_path = file_path.to_string();
+
+        if music_id.trim().is_empty() {
+            self.error_message = QString::from("Erro: nenhuma música selecionada");
+            self.error_message_changed();
+            return false;
+        }
+
+        let Some(pool) = self.pool.clone() else {
+            self.error_message = QString::from("Erro: banco de dados indisponível");
+            self.error_message_changed();
+            return false;
+        };
+
+        let Some(player) = self.player.clone() else {
+            self.error_message = QString::from("Erro: player indisponível");
+            self.error_message_changed();
+            return false;
+        };
+
+        let path = qml_path_to_pathbuf(&file_path);
+        let extension = match path.extension().and_then(|ext| ext.to_str()) {
+            Some(ext) => ext.to_lowercase(),
+            None => {
+                self.error_message = QString::from("Erro: arquivo sem extensão suportada");
+                self.error_message_changed();
+                return false;
+            }
+        };
+
+        let parser_name = match extension.as_str() {
+            "lrc" => "LRC",
+            "srt" => "SRT",
+            "vtt" => "VTT",
+            _ => {
+                self.error_message = QString::from("Erro: formato de importação inválido");
+                self.error_message_changed();
+                return false;
+            }
+        };
+
+        let active_music_id = self.current_music_id.to_string();
+        let qptr = QPointer::from(&*self);
+        let show_message = queued_callback(move |msg: String| {
+            if let Some(pinned) = qptr.as_pinned() {
+                let mut this = pinned.borrow_mut();
+                this.error_message = QString::from(msg.as_str());
+                this.error_message_changed();
+            }
+        });
+
+        tokio::spawn(async move {
+            let content = match fs::read_to_string(&path).await {
+                Ok(content) => content,
+                Err(err) => {
+                    show_message(format!("Erro: falha ao ler o arquivo: {err}"));
+                    return;
+                }
+            };
+
+            let repository = LyricsRepository::new(&pool);
+            let lines = match extension.as_str() {
+                "lrc" => lrc_parser::parse(&content, &music_id),
+                "srt" => srt_parser::parse(&content, &music_id),
+                "vtt" => vtt_parser::parse(&content, &music_id),
+                _ => Vec::new(),
+            };
+
+            if lines.is_empty() {
+                show_message(format!(
+                    "Erro: nenhum verso válido encontrado no arquivo {parser_name}"
+                ));
+                return;
+            }
+
+            if let Err(err) = repository.delete_by_music_id(&music_id).await {
+                show_message(format!("Erro: falha ao substituir as letras: {err}"));
+                return;
+            }
+
+            if let Err(err) = repository.save_all(&lines).await {
+                show_message(format!("Erro: falha ao salvar as letras importadas: {err}"));
+                return;
+            }
+
+            if active_music_id == music_id {
+                match repository.find_by_music_id(&music_id).await {
+                    Ok(saved_lines) => {
+                        if let Err(err) = player.replace_current_lyrics(&music_id, saved_lines).await {
+                            show_message(format!(
+                                "Erro: falha ao recarregar as letras ativas: {err}"
+                            ));
+                            return;
+                        }
+                    }
+                    Err(err) => {
+                        show_message(format!(
+                            "Erro: letras importadas, mas falha ao recarregar a UI: {err}"
+                        ));
+                        return;
+                    }
+                }
+            }
+
+            show_message("OK: Letras importadas".to_string());
+        });
+
+        true
+    }),
+
     update_lyric_line: qt_method!(fn update_lyric_line(&mut self, id: i64, new_text: QString) {
         let Some(player) = self.player.clone() else {
             return;
@@ -430,6 +626,7 @@ impl AppController {
         controller.pool = Some(pool);
         controller.settings = settings.clone();
         controller.current_lyrics = QVariantList::default();
+        controller.current_music_id = QString::default();
         controller.active_line_id = -1;
         controller
     }
@@ -451,6 +648,8 @@ impl AppController {
         self.sync_offset_changed();
         self.current_lyrics = QVariantList::default();
         self.current_lyrics_changed();
+        self.current_music_id = QString::default();
+        self.current_music_id_changed();
         self.active_line_id = -1;
         self.active_line_id_changed();
         self.lyric_text = QString::default();
@@ -655,6 +854,8 @@ impl AppController {
                     if state == PlaybackState::Stopped {
                         this.current_lyrics = QVariantList::default();
                         this.current_lyrics_changed();
+                        this.current_music_id = QString::default();
+                        this.current_music_id_changed();
                         this.active_line_id = -1;
                         this.active_line_id_changed();
                     }
@@ -665,6 +866,8 @@ impl AppController {
                         QString::from(music.artist.unwrap_or_default().as_str());
                     this.music_title_changed();
                     this.music_artist_changed();
+                    this.current_music_id = QString::from(music.id.as_str());
+                    this.current_music_id_changed();
                     let mut list = QVariantList::default();
                     for line in lyrics {
                         let mut map = QVariantMap::default();

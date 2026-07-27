@@ -245,6 +245,29 @@ impl Player {
         Ok(())
     }
 
+    /// Substitui as letras da música ativa e reemite o estado atualizado.
+    pub async fn replace_current_lyrics(
+        &self,
+        music_id: &str,
+        lyrics: Vec<LyricsLine>,
+    ) -> Result<bool> {
+        let updated_lyrics = {
+            let mut state = self.state.write().await;
+            let Some(current_music) = state.current_music.as_ref() else {
+                return Ok(false);
+            };
+            if current_music.id != music_id {
+                return Ok(false);
+            }
+
+            state.current_lyrics = lyrics;
+            state.current_lyrics.clone()
+        };
+
+        self.emit(PlayerEvent::LyricsUpdated(updated_lyrics));
+        Ok(true)
+    }
+
     /// Garante que o áudio da mídia esteja disponível localmente no cache.
     ///
     /// Retorna o caminho do arquivo local. Se já existir, é um *cache hit* e o

@@ -1,6 +1,7 @@
 import QtQuick
 import QtQuick.Controls
 import QtQuick.Layouts
+import QtQuick.Dialogs
 import QtQuick.Window
 
 ApplicationWindow {
@@ -34,6 +35,30 @@ ApplicationWindow {
         if (appController.active_line_id < 0)
             return;
         appController.update_lyric_line(appController.active_line_id, lyricDraft)
+    }
+
+    function exportFormatFromFilter(filterName) {
+        return filterName.indexOf("SRT") >= 0 ? "srt" : "lrc"
+    }
+
+    FileDialog {
+        id: importLyricsDialog
+        title: "Importar letras"
+        fileMode: FileDialog.OpenFile
+        nameFilters: ["Letras sincronizadas (*.lrc *.srt *.vtt)", "LRC (*.lrc)", "SRT (*.srt)", "WebVTT (*.vtt)"]
+        onAccepted: appController.import_lyrics(appController.current_music_id, selectedFile.toString())
+    }
+
+    FileDialog {
+        id: exportLyricsDialog
+        title: "Exportar letras"
+        fileMode: FileDialog.SaveFile
+        nameFilters: ["LRC (*.lrc)", "SRT (*.srt)"]
+        onAccepted: appController.export_lyrics(
+            appController.current_music_id,
+            selectedFile.toString(),
+            operatorWindow.exportFormatFromFilter(selectedNameFilter.name)
+        )
     }
 
     Shortcut {
@@ -176,7 +201,9 @@ ApplicationWindow {
                 Label {
                     Layout.fillWidth: true
                     text: appController.error_message
-                    color: "#CC0000"
+                    color: appController.error_message.startsWith("OK:")
+                        ? "#2E7D32"
+                        : "#CC0000"
                     wrapMode: Text.WordWrap
                     visible: appController.error_message.length > 0
                 }
@@ -300,6 +327,32 @@ ApplicationWindow {
                                 text: "Salvar"
                                 enabled: appController.active_line_id >= 0
                                 onClicked: operatorWindow.saveLyricEdit()
+                            }
+                        }
+
+                        RowLayout {
+                            Layout.fillWidth: true
+                            spacing: 8
+
+                            Button {
+                                text: "Importar Letras"
+                                enabled: appController.current_music_id.length > 0 && !appController.loading
+                                onClicked: importLyricsDialog.open()
+                            }
+
+                            Button {
+                                text: "Exportar Letras"
+                                enabled: appController.current_music_id.length > 0 && !appController.loading
+                                onClicked: exportLyricsDialog.open()
+                            }
+
+                            Label {
+                                Layout.fillWidth: true
+                                text: appController.current_music_id.length > 0
+                                    ? "Música ativa: " + appController.current_music_id
+                                    : "Nenhuma música ativa"
+                                horizontalAlignment: Text.AlignRight
+                                elide: Text.ElideRight
                             }
                         }
                     }
