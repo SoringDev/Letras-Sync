@@ -52,10 +52,10 @@ async fn main() -> anyhow::Result<()> {
         Arc::clone(&whisper),
     ));
 
-    let player = Player::new(audio_engine, youtube, lyrics, pool);
+    let player = Player::new(audio_engine, youtube, lyrics, pool.clone());
     let timeline = Timeline::new(Arc::clone(&player));
 
-    presentation::ui::run_operator_ui(player, timeline, settings)?;
+    presentation::ui::run_operator_ui(player, timeline, pool, settings)?;
 
     Ok(())
 }

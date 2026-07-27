@@ -1,12 +1,15 @@
 use std::sync::Arc;
 
 use qmetaobject::prelude::*;
-use qmetaobject::{queued_callback, QObjectBox, QPointer};
+use qmetaobject::{queued_callback, QObjectBox, QPointer, QVariantList, QVariantMap};
+use sqlx::sqlite::SqlitePool;
 use tokio::sync::broadcast;
 
 use crate::application::player::{PlaybackState, Player, PlayerEvent};
 use crate::application::timeline::{Timeline, TimelineEvent};
+use crate::domain::music::Music;
 use crate::domain::settings::Settings;
+use crate::infrastructure::music_repository::MusicRepository;
 
 qrc!(register_qml_resources,
     "letras_sync/presentation" {
@@ -72,6 +75,9 @@ pub struct AppController {
     projector_screen_index: qt_property!(i32; NOTIFY style_changed),
     style_changed: qt_signal!(),
 
+    history: qt_property!(QVariantList; NOTIFY history_changed),
+    history_changed: qt_signal!(),
+
     load_music: qt_method!(fn load_music(&mut self, url: QString) {
         let Some(player) = self.player.clone() else {
             return;
@@ -79,12 +85,24 @@ pub struct AppController {
         self.loading = true;
         self.loading_changed();
 
-        let url = url.to_string();
-        tokio::spawn(async move {
-            if let Err(err) = player.load_youtube(&url).await {
-                tracing::error!("falha ao carregar a música {url}: {err:?}");
+        let qptr = QPointer::from(&*self);
+        let refresh = queued_callback(move |()| {
+            if let Some(pinned) = qptr.as_pinned() {
+                pinned.borrow().spawn_history_refresh();
             }
         });
+
+        let url = url.to_string();
+        tokio::spawn(async move {
+            match player.load_youtube(&url).await {
+                Ok(()) => refresh(()),
+                Err(err) => tracing::error!("falha ao carregar a música {url}: {err:?}"),
+            }
+        });
+    }),
+
+    refresh_history: qt_method!(fn refresh_history(&self) {
+        self.spawn_history_refresh();
     }),
 
     play: qt_method!(fn play(&self) {
@@ -136,14 +154,51 @@ pub struct AppController {
         self.projection_visible_changed();
     }),
 
+    set_font_size: qt_method!(fn set_font_size(&mut self, value: u32) {
+        self.font_size = value;
+        self.settings.font_size = value;
+        self.style_changed();
+        self.persist_settings();
+    }),
+
+    set_font_family: qt_method!(fn set_font_family(&mut self, value: QString) {
+        self.font_family = value.clone();
+        self.settings.font_family = value.to_string();
+        self.style_changed();
+        self.persist_settings();
+    }),
+
+    set_font_color: qt_method!(fn set_font_color(&mut self, value: QString) {
+        self.font_color = value.clone();
+        self.settings.font_color = value.to_string();
+        self.style_changed();
+        self.persist_settings();
+    }),
+
+    set_background_color: qt_method!(fn set_background_color(&mut self, value: QString) {
+        self.background_color = value.clone();
+        self.settings.background_color = value.to_string();
+        self.style_changed();
+        self.persist_settings();
+    }),
+
+    set_projector_screen_index: qt_method!(fn set_projector_screen_index(&mut self, value: i32) {
+        self.projector_screen_index = value;
+        self.settings.projector_monitor = if value < 0 { None } else { Some(value as u32) };
+        self.style_changed();
+        self.persist_settings();
+    }),
+
     player: Option<Arc<Player>>,
     timeline: Option<Arc<Timeline>>,
+    pool: Option<SqlitePool>,
+    settings: Settings,
 }
 
 impl AppController {
     /// Cria o controlador já populado com o estado de estilo das configurações.
     #[allow(clippy::field_reassign_with_default)]
-    fn new(player: Arc<Player>, timeline: Arc<Timeline>, settings: &Settings) -> Self {
+    fn new(player: Arc<Player>, timeline: Arc<Timeline>, pool: SqlitePool, settings: &Settings) -> Self {
         let mut controller = AppController::default();
         controller.playback_state = QString::from(playback_state_label(PlaybackState::Idle));
         controller.font_size = settings.font_size;
@@ -154,7 +209,59 @@ impl AppController {
             settings.projector_monitor.map(|m| m as i32).unwrap_or(-1);
         controller.player = Some(player);
         controller.timeline = Some(timeline);
+        controller.pool = Some(pool);
+        controller.settings = settings.clone();
         controller
+    }
+
+    /// Grava as configurações atuais no disco, registrando eventual falha.
+    fn persist_settings(&self) {
+        if let Err(err) = crate::shared::config::save_settings(&self.settings) {
+            tracing::error!("falha ao salvar as configurações: {err:?}");
+        }
+    }
+
+    /// Recarrega o histórico de músicas do banco em segundo plano.
+    ///
+    /// A consulta ocorre em uma tarefa tokio, mas a `QVariantList` exposta ao
+    /// QML é montada dentro do `queued_callback`, na thread do Qt.
+    fn spawn_history_refresh(&self) {
+        let Some(pool) = self.pool.clone() else {
+            return;
+        };
+        let qptr = QPointer::from(self);
+
+        let apply = queued_callback(move |items: Vec<Music>| {
+            let Some(pinned) = qptr.as_pinned() else {
+                return;
+            };
+            let mut this = pinned.borrow_mut();
+            let mut list = QVariantList::default();
+            for music in items {
+                let mut map = QVariantMap::default();
+                map.insert("id".into(), QString::from(music.id.as_str()).into());
+                map.insert("title".into(), QString::from(music.title.as_str()).into());
+                map.insert(
+                    "artist".into(),
+                    QString::from(music.artist.unwrap_or_default().as_str()).into(),
+                );
+                map.insert(
+                    "youtube_url".into(),
+                    QString::from(music.youtube_url.as_str()).into(),
+                );
+                list.push(map.into());
+            }
+            this.history = list;
+            this.history_changed();
+        });
+
+        tokio::spawn(async move {
+            let repository = MusicRepository::new(&pool);
+            match repository.list_all().await {
+                Ok(items) => apply(items),
+                Err(err) => tracing::error!("falha ao atualizar o histórico: {err:?}"),
+            }
+        });
     }
 
     /// Inicia as tarefas que consomem os eventos do `Player` e da `Timeline`.
@@ -270,6 +377,7 @@ impl AppController {
 pub fn run_operator_ui(
     player: Arc<Player>,
     timeline: Arc<Timeline>,
+    pool: SqlitePool,
     settings: Settings,
 ) -> anyhow::Result<()> {
     if !has_display() {
@@ -282,7 +390,7 @@ pub fn run_operator_ui(
 
     register_qml_resources();
 
-    let controller = QObjectBox::new(AppController::new(player, timeline, &settings));
+    let controller = QObjectBox::new(AppController::new(player, timeline, pool, &settings));
     let pinned = controller.pinned();
 
     let mut engine = QmlEngine::new();

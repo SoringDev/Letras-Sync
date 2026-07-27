@@ -10,6 +10,8 @@ ApplicationWindow {
     height: 480
     title: "Letras Sync"
 
+    Component.onCompleted: appController.refresh_history()
+
     // Janela de projeção controlada pelo mesmo appController.
     Loader {
         source: "qrc:/letras_sync/presentation/projection.qml"
@@ -78,6 +80,63 @@ ApplicationWindow {
 
         Item {
             Layout.fillHeight: true
+        }
+
+        ColumnLayout {
+            Layout.fillWidth: true
+            spacing: 4
+
+            Label {
+                text: "Histórico"
+                font.bold: true
+            }
+
+            Label {
+                Layout.fillWidth: true
+                text: "Nenhuma música no histórico"
+                color: "#666666"
+                visible: appController.history.length === 0
+            }
+
+            ListView {
+                Layout.fillWidth: true
+                Layout.preferredHeight: 140
+                clip: true
+                spacing: 4
+                visible: appController.history.length > 0
+                model: appController.history
+
+                delegate: RowLayout {
+                    width: ListView.view.width
+                    spacing: 8
+
+                    Button {
+                        text: "▶"
+                        onClicked: appController.load_music(modelData.youtube_url)
+                    }
+
+                    ColumnLayout {
+                        Layout.fillWidth: true
+                        spacing: 0
+
+                        Label {
+                            Layout.fillWidth: true
+                            text: modelData.title
+                            font.bold: true
+                            elide: Text.ElideRight
+                        }
+
+                        Label {
+                            Layout.fillWidth: true
+                            text: modelData.artist
+                            font.pixelSize: 12
+                            color: "#666666"
+                            visible: modelData.artist.length > 0
+                            elide: Text.ElideRight
+                        }
+                    }
+                }
+            }
         }
 
         RowLayout {

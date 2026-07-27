@@ -63,8 +63,12 @@ pub fn load_settings() -> Result<Settings> {
 
 /// Grava as configurações no arquivo TOML, criando os diretórios se necessário.
 pub fn save_settings(settings: &Settings) -> Result<()> {
-    let path = config_file_path()?;
+    write_settings(&config_file_path()?, settings)
+}
 
+/// Serializa e grava as configurações no caminho informado, criando os
+/// diretórios pai se necessário.
+fn write_settings(path: &std::path::Path, settings: &Settings) -> Result<()> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)
             .with_context(|| format!("falha ao criar o diretório {}", parent.display()))?;
@@ -73,7 +77,7 @@ pub fn save_settings(settings: &Settings) -> Result<()> {
     let contents = toml::to_string_pretty(settings)
         .context("falha ao serializar as configurações para TOML")?;
 
-    fs::write(&path, contents)
+    fs::write(path, contents)
         .with_context(|| format!("falha ao gravar o arquivo de configuração {}", path.display()))?;
 
     Ok(())
@@ -84,4 +88,41 @@ fn default_settings() -> Result<Settings> {
         cache_path: default_cache_path()?,
         ..Settings::default()
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn saved_settings_are_reloaded_correctly() {
+        let dir = std::env::temp_dir().join(format!(
+            "letras_sync_settings_test_{}_{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        fs::create_dir_all(&dir).expect("diretório temporário");
+        let path = dir.join(CONFIG_FILE_NAME);
+
+        let settings = Settings {
+            font_size: 72,
+            font_family: "Serif".to_string(),
+            font_color: "#123456".to_string(),
+            background_color: "#654321".to_string(),
+            projector_monitor: Some(2),
+            cache_path: "/tmp/custom-cache".to_string(),
+        };
+
+        write_settings(&path, &settings).expect("gravar configurações");
+
+        let contents = fs::read_to_string(&path).expect("ler configurações");
+        let reloaded: Settings = toml::from_str(&contents).expect("desserializar");
+
+        assert_eq!(reloaded, settings);
+
+        let _ = fs::remove_dir_all(&dir);
+    }
 }
