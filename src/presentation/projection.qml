@@ -1,4 +1,5 @@
 import QtQuick
+import QtQuick.Layouts
 import QtQuick.Window
 
 Window {
@@ -18,15 +19,38 @@ Window {
     screen: Qt.application.screens[screenIndex]
     visibility: appController.projection_visible ? Window.FullScreen : Window.Hidden
 
-    Text {
+    ColumnLayout {
         anchors.fill: parent
         anchors.margins: 32
-        horizontalAlignment: Text.AlignHCenter
-        verticalAlignment: Text.AlignVCenter
-        wrapMode: Text.WordWrap
-        text: appController.clear_screen ? "" : appController.lyric_text
-        color: appController.font_color
-        font.pixelSize: appController.font_size
-        font.family: appController.font_family
+        spacing: 12
+
+        Item {
+            Layout.fillHeight: true
+        }
+
+        Text {
+            Layout.fillWidth: true
+            horizontalAlignment: Text.AlignHCenter
+            wrapMode: Text.WordWrap
+            text: appController.clear_screen ? "" : appController.lyric_text
+            color: appController.font_color
+            font.pixelSize: appController.font_size
+            font.family: appController.font_family
+        }
+
+        Text {
+            Layout.fillWidth: true
+            horizontalAlignment: Text.AlignHCenter
+            wrapMode: Text.WordWrap
+            text: appController.clear_screen ? "" : appController.next_lyric_text
+            color: "#D0D0D0"
+            opacity: 0.72
+            font.pixelSize: Math.max(12, Math.round(appController.font_size * 0.6))
+            font.family: appController.font_family
+        }
+
+        Item {
+            Layout.fillHeight: true
+        }
     }
 }

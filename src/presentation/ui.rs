@@ -69,6 +69,9 @@ pub struct AppController {
     lyric_text: qt_property!(QString; NOTIFY lyric_text_changed),
     lyric_text_changed: qt_signal!(),
 
+    next_lyric_text: qt_property!(QString; NOTIFY next_lyric_text_changed),
+    next_lyric_text_changed: qt_signal!(),
+
     clear_screen: qt_property!(bool; NOTIFY clear_screen_changed),
     clear_screen_changed: qt_signal!(),
 
@@ -334,6 +337,18 @@ pub struct AppController {
         });
     }),
 
+    update_lyric_line: qt_method!(fn update_lyric_line(&mut self, id: i64, new_text: QString) {
+        let Some(player) = self.player.clone() else {
+            return;
+        };
+        let new_text = new_text.to_string();
+        tokio::spawn(async move {
+            if let Err(err) = player.update_lyrics_line(id, &new_text).await {
+                tracing::error!("falha ao atualizar a linha de letra {id}: {err:?}");
+            }
+        });
+    }),
+
     toggle_projection: qt_method!(fn toggle_projection(&mut self) {
         self.projection_visible = !self.projection_visible;
         self.projection_visible_changed();
@@ -407,6 +422,7 @@ impl AppController {
         controller.projector_screen_index =
             settings.projector_monitor.map(|m| m as i32).unwrap_or(-1);
         controller.clear_screen = false;
+        controller.next_lyric_text = QString::default();
         controller.history_search_query = QString::default();
         controller.player = Some(player);
         controller.timeline = Some(timeline);
@@ -439,6 +455,8 @@ impl AppController {
         self.active_line_id_changed();
         self.lyric_text = QString::default();
         self.lyric_text_changed();
+        self.next_lyric_text = QString::default();
+        self.next_lyric_text_changed();
         self.clear_screen = false;
         self.clear_screen_changed();
 
@@ -666,6 +684,18 @@ impl AppController {
                     this.loading = false;
                     this.loading_changed();
                 }
+                PlayerEvent::LyricsUpdated(lyrics) => {
+                    let mut list = QVariantList::default();
+                    for line in lyrics {
+                        let mut map = QVariantMap::default();
+                        map.insert("id".into(), line.id.into());
+                        map.insert("start_time".into(), line.start_time.into());
+                        map.insert("text".into(), QString::from(line.text.as_str()).into());
+                        list.push(map.into());
+                    }
+                    this.current_lyrics = list;
+                    this.current_lyrics_changed();
+                }
                 PlayerEvent::PositionUpdated { position, duration } => {
                     this.current_time = position;
                     this.current_time_changed();
@@ -713,12 +743,15 @@ impl AppController {
             };
             let mut this = pinned.borrow_mut();
             match event {
-                TimelineEvent::LineChanged(line) => {
-                    this.active_line_id = line.as_ref().map(|l| l.id).unwrap_or(-1);
+                TimelineEvent::LineChanged { active, next } => {
+                    this.active_line_id = active.as_ref().map(|l| l.id).unwrap_or(-1);
                     this.active_line_id_changed();
-                    let text = line.map(|l| l.text).unwrap_or_default();
+                    let text = active.map(|l| l.text).unwrap_or_default();
                     this.lyric_text = QString::from(text.as_str());
                     this.lyric_text_changed();
+                    let next_text = next.map(|l| l.text).unwrap_or_default();
+                    this.next_lyric_text = QString::from(next_text.as_str());
+                    this.next_lyric_text_changed();
                 }
             }
         });

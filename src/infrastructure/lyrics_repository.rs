@@ -66,6 +66,21 @@ impl<'a> LyricsRepository<'a> {
 
         Ok(())
     }
+
+    pub async fn update_text(&self, id: i64, new_text: &str) -> Result<()> {
+        let result = sqlx::query("UPDATE lyrics_line SET text = ? WHERE id = ?")
+            .bind(new_text)
+            .bind(id)
+            .execute(self.pool)
+            .await
+            .with_context(|| format!("falha ao atualizar a linha de letra {}", id))?;
+
+        if result.rows_affected() == 0 {
+            anyhow::bail!("linha de letra inexistente: {id}");
+        }
+
+        Ok(())
+    }
 }
 
 #[cfg(test)]
@@ -140,5 +155,28 @@ mod tests {
         let repository = LyricsRepository::new(&pool);
 
         assert!(repository.delete_by_music_id("inexistente").await.is_ok());
+    }
+
+    #[tokio::test]
+    async fn update_text_changes_persisted_line() {
+        let pool = memory_pool().await;
+        insert_music(&pool, "m1").await;
+        let repository = LyricsRepository::new(&pool);
+
+        repository
+            .save_all(&[line("m1", 0.0)])
+            .await
+            .expect("save_all");
+
+        let before = repository.find_by_music_id("m1").await.expect("find before");
+        let id = before[0].id;
+
+        repository
+            .update_text(id, "texto corrigido")
+            .await
+            .expect("update_text");
+
+        let after = repository.find_by_music_id("m1").await.expect("find after");
+        assert_eq!(after[0].text, "texto corrigido");
     }
 }

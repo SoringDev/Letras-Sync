@@ -113,6 +113,11 @@ impl LyricsService {
         repository.delete_by_music_id(music_id).await
     }
 
+    pub async fn update_text(&self, id: i64, new_text: &str) -> Result<()> {
+        let repository = LyricsRepository::new(&self.pool);
+        repository.update_text(id, new_text).await
+    }
+
     async fn persist(&self, repository: &LyricsRepository<'_>, lines: &[LyricsLine]) {
         if let Err(e) = repository.save_all(lines).await {
             tracing::warn!("falha ao persistir as letras: {e}");

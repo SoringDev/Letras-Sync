@@ -9,8 +9,32 @@ ApplicationWindow {
     width: 640
     height: 480
     title: "Letras Sync"
+    property string lyricDraft: ""
 
-    Component.onCompleted: appController.refresh_history()
+    Component.onCompleted: {
+        appController.refresh_history()
+        lyricDraft = appController.lyric_text
+    }
+
+    Connections {
+        target: appController
+
+        function onLyric_textChanged() {
+            if (!lyricEditField.activeFocus)
+                operatorWindow.lyricDraft = appController.lyric_text
+        }
+
+        function onActive_line_idChanged() {
+            if (!lyricEditField.activeFocus)
+                operatorWindow.lyricDraft = appController.lyric_text
+        }
+    }
+
+    function saveLyricEdit() {
+        if (appController.active_line_id < 0)
+            return;
+        appController.update_lyric_line(appController.active_line_id, lyricDraft)
+    }
 
     Shortcut {
         sequence: "Space"
@@ -225,6 +249,57 @@ ApplicationWindow {
                             MouseArea {
                                 anchors.fill: parent
                                 onClicked: appController.seek(modelData.start_time)
+                            }
+                        }
+                    }
+
+                    ColumnLayout {
+                        Layout.fillWidth: true
+                        spacing: 4
+
+                        Label {
+                            text: "Próxima linha"
+                            font.bold: true
+                        }
+
+                        Text {
+                            Layout.fillWidth: true
+                            text: appController.next_lyric_text.length > 0
+                                ? appController.next_lyric_text
+                                : "Nenhuma próxima linha"
+                            color: "#8A8A8A"
+                            opacity: 0.75
+                            wrapMode: Text.WordWrap
+                            font.pixelSize: Math.max(12, Math.round(appController.font_size * 0.6))
+                            elide: Text.ElideRight
+                        }
+
+                        Label {
+                            text: "Edição rápida"
+                            font.bold: true
+                        }
+
+                        RowLayout {
+                            Layout.fillWidth: true
+                            spacing: 8
+
+                            TextField {
+                                id: lyricEditField
+                                Layout.fillWidth: true
+                                placeholderText: appController.active_line_id >= 0
+                                    ? "Corrigir a letra ativa..."
+                                    : "Nenhuma linha ativa"
+                                enabled: appController.active_line_id >= 0
+                                selectByMouse: true
+                                text: operatorWindow.lyricDraft
+                                onTextEdited: operatorWindow.lyricDraft = text
+                                onAccepted: operatorWindow.saveLyricEdit()
+                            }
+
+                            Button {
+                                text: "Salvar"
+                                enabled: appController.active_line_id >= 0
+                                onClicked: operatorWindow.saveLyricEdit()
                             }
                         }
                     }

@@ -14,7 +14,10 @@ const EVENT_CHANNEL_CAPACITY: usize = 64;
 pub enum TimelineEvent {
     /// A linha de letra ativa foi alterada. `None` representa silêncio ou
     /// ausência de letra.
-    LineChanged(Option<LyricsLine>),
+    LineChanged {
+        active: Option<LyricsLine>,
+        next: Option<LyricsLine>,
+    },
 }
 
 /// Estado interno compartilhado da timeline.
@@ -86,7 +89,19 @@ impl Timeline {
                 state.active_line = None;
                 state.position = 0.0;
                 drop(state);
-                self.emit(TimelineEvent::LineChanged(None));
+                self.emit(TimelineEvent::LineChanged {
+                    active: None,
+                    next: None,
+                });
+            }
+            PlayerEvent::LyricsUpdated(lyrics) => {
+                let mut state = self.state.write().await;
+                state.lyrics = lyrics;
+                let adjusted_position = state.position + state.offset;
+                let (active, next) = active_and_next_line(&state.lyrics, adjusted_position);
+                state.active_line = active.clone();
+                drop(state);
+                self.emit(TimelineEvent::LineChanged { active, next });
             }
             PlayerEvent::StateChanged(PlaybackState::Stopped)
             | PlayerEvent::PlaybackFinished => {
@@ -95,7 +110,10 @@ impl Timeline {
                 state.active_line = None;
                 state.position = 0.0;
                 drop(state);
-                self.emit(TimelineEvent::LineChanged(None));
+                self.emit(TimelineEvent::LineChanged {
+                    active: None,
+                    next: None,
+                });
             }
             PlayerEvent::PositionUpdated { position, .. } => {
                 self.update_active_line(position).await;
@@ -110,15 +128,15 @@ impl Timeline {
         state.offset = offset;
 
         let adjusted_position = state.position + state.offset;
-        let next = find_active_line(&state.lyrics, adjusted_position).cloned();
+        let (active, next) = active_and_next_line(&state.lyrics, adjusted_position);
 
-        if same_line(&state.active_line, &next) {
+        if same_line(&state.active_line, &active) {
             return;
         }
 
-        state.active_line = next.clone();
+        state.active_line = active.clone();
         drop(state);
-        self.emit(TimelineEvent::LineChanged(next));
+        self.emit(TimelineEvent::LineChanged { active, next });
     }
 
     /// Retorna o offset atual aplicado à timeline.
@@ -132,15 +150,15 @@ impl Timeline {
         let mut state = self.state.write().await;
         state.position = position;
         let adjusted_position = state.position + state.offset;
-        let next = find_active_line(&state.lyrics, adjusted_position).cloned();
+        let (active, next) = active_and_next_line(&state.lyrics, adjusted_position);
 
-        if same_line(&state.active_line, &next) {
+        if same_line(&state.active_line, &active) {
             return;
         }
 
-        state.active_line = next.clone();
+        state.active_line = active.clone();
         drop(state);
-        self.emit(TimelineEvent::LineChanged(next));
+        self.emit(TimelineEvent::LineChanged { active, next });
     }
 }
 
@@ -151,6 +169,23 @@ fn find_active_line(lines: &[LyricsLine], position: f64) -> Option<&LyricsLine> 
     lines
         .iter()
         .find(|line| line.start_time <= position && position < line.end_time)
+}
+
+fn active_and_next_line(
+    lines: &[LyricsLine],
+    position: f64,
+) -> (Option<LyricsLine>, Option<LyricsLine>) {
+    let Some(active) = find_active_line(lines, position) else {
+        return (None, None);
+    };
+
+    let Some(index) = lines.iter().position(|line| line.id == active.id) else {
+        return (None, None);
+    };
+
+    let active = Some(active.clone());
+    let next = lines.get(index + 1).cloned();
+    (active, next)
 }
 
 /// Compara duas linhas por identidade (`id`), tratando `None` como silêncio.
@@ -275,5 +310,14 @@ mod tests {
     fn same_line_false_for_none_vs_some() {
         let b = Some(line(1, 0.0, 2.0));
         assert!(!same_line(&None, &b));
+    }
+
+    #[test]
+    fn active_and_next_line_returns_subsequent_line() {
+        let lines = sample_lines();
+        let (active, next) = active_and_next_line(&lines, 2.5);
+
+        assert_eq!(active.as_ref().map(|l| l.id), Some(2));
+        assert_eq!(next.as_ref().map(|l| l.id), Some(3));
     }
 }

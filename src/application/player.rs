@@ -41,6 +41,7 @@ pub enum PlayerEvent {
         music: Music,
         lyrics: Vec<LyricsLine>,
     },
+    LyricsUpdated(Vec<LyricsLine>),
     PositionUpdated {
         position: f64,
         duration: Option<f64>,
@@ -218,6 +219,32 @@ impl Player {
         self.lyrics_service.clear_cache(&music_id).await
     }
 
+    /// Atualiza o texto de uma linha de letra da música ativa.
+    pub async fn update_lyrics_line(&self, id: i64, new_text: &str) -> Result<()> {
+        {
+            let state = self.state.read().await;
+            if state.current_music.is_none() {
+                anyhow::bail!("nenhuma música ativa para edição de letra");
+            }
+        }
+
+        self.lyrics_service.update_text(id, new_text).await?;
+
+        let lyrics = {
+            let mut state = self.state.write().await;
+            let line = state
+                .current_lyrics
+                .iter_mut()
+                .find(|line| line.id == id)
+                .ok_or_else(|| anyhow::anyhow!("linha de letra inexistente no estado ativo: {id}"))?;
+            line.text = new_text.to_string();
+            state.current_lyrics.clone()
+        };
+
+        self.emit(PlayerEvent::LyricsUpdated(lyrics));
+        Ok(())
+    }
+
     /// Garante que o áudio da mídia esteja disponível localmente no cache.
     ///
     /// Retorna o caminho do arquivo local. Se já existir, é um *cache hit* e o
@@ -354,6 +381,8 @@ fn should_emit_position(last: f64, current: f64) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::infrastructure::lyrics_repository::LyricsRepository;
+    use crate::infrastructure::music_repository::MusicRepository;
     use crate::infrastructure::whisper::WhisperService;
 
     // ----- Testes das funções puras (independentes de mpv/yt-dlp). -----
@@ -532,6 +561,89 @@ mod tests {
             event,
             PlayerEvent::StateChanged(PlaybackState::Stopped)
         ));
+    }
+
+    #[tokio::test]
+    async fn update_lyrics_line_updates_state_and_emits_event() {
+        let pool = memory_pool().await;
+        let Some(player) = build_player(pool.clone()) else {
+            return;
+        };
+
+        let music = Music {
+            id: "m1".to_string(),
+            title: "Título".to_string(),
+            artist: Some("Artista".to_string()),
+            youtube_url: "https://youtu.be/m1".to_string(),
+            duration: Some(120),
+            thumbnail: None,
+            created_at: Some("2024-01-01 00:00:00".to_string()),
+            has_lyrics: Some(true),
+        };
+
+        MusicRepository::new(&pool)
+            .save(&music)
+            .await
+            .expect("save music");
+        LyricsRepository::new(&pool)
+            .save_all(&[
+                LyricsLine {
+                    id: 1,
+                    music_id: music.id.clone(),
+                    start_time: 0.0,
+                    end_time: 1.0,
+                    text: "linha original".to_string(),
+                },
+                LyricsLine {
+                    id: 2,
+                    music_id: music.id.clone(),
+                    start_time: 1.0,
+                    end_time: 2.0,
+                    text: "linha seguinte".to_string(),
+                },
+            ])
+            .await
+            .expect("save lyrics");
+
+        {
+            let mut state = player.state.write().await;
+            state.current_music = Some(music);
+            state.current_lyrics = vec![
+                LyricsLine {
+                    id: 1,
+                    music_id: "m1".to_string(),
+                    start_time: 0.0,
+                    end_time: 1.0,
+                    text: "linha original".to_string(),
+                },
+                LyricsLine {
+                    id: 2,
+                    music_id: "m1".to_string(),
+                    start_time: 1.0,
+                    end_time: 2.0,
+                    text: "linha seguinte".to_string(),
+                },
+            ];
+        }
+
+        let mut rx = player.subscribe();
+
+        player
+            .update_lyrics_line(1, "linha corrigida")
+            .await
+            .expect("update lyrics line");
+
+        let state = player.state.read().await;
+        assert_eq!(state.current_lyrics[0].text, "linha corrigida");
+
+        let event = rx.recv().await.expect("evento");
+        match event {
+            PlayerEvent::LyricsUpdated(lyrics) => {
+                assert_eq!(lyrics[0].text, "linha corrigida");
+                assert_eq!(lyrics[1].text, "linha seguinte");
+            }
+            other => panic!("evento inesperado: {other:?}"),
+        }
     }
 
     // ----- Testes do cache de áudio local. -----
