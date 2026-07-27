@@ -24,7 +24,7 @@ Window {
         horizontalAlignment: Text.AlignHCenter
         verticalAlignment: Text.AlignVCenter
         wrapMode: Text.WordWrap
-        text: appController.lyric_text
+        text: appController.clear_screen ? "" : appController.lyric_text
         color: appController.font_color
         font.pixelSize: appController.font_size
         font.family: appController.font_family

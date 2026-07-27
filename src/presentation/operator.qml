@@ -12,6 +12,54 @@ ApplicationWindow {
 
     Component.onCompleted: appController.refresh_history()
 
+    Shortcut {
+        sequence: "Space"
+        context: Qt.WindowShortcut
+        onActivated: appController.toggle_clear_screen()
+    }
+
+    Shortcut {
+        sequence: "Left"
+        context: Qt.WindowShortcut
+        onActivated: appController.seek_relative(-10.0)
+    }
+
+    Shortcut {
+        sequence: "Right"
+        context: Qt.WindowShortcut
+        onActivated: appController.seek_relative(10.0)
+    }
+
+    Shortcut {
+        sequence: "Up"
+        context: Qt.WindowShortcut
+        onActivated: appController.set_volume(Math.min(appController.volume + 5, 100))
+    }
+
+    Shortcut {
+        sequence: "Down"
+        context: Qt.WindowShortcut
+        onActivated: appController.set_volume(Math.max(appController.volume - 5, 0))
+    }
+
+    Shortcut {
+        sequence: "PageDown"
+        context: Qt.WindowShortcut
+        onActivated: appController.play_next()
+    }
+
+    Shortcut {
+        sequence: "PageUp"
+        context: Qt.WindowShortcut
+        onActivated: appController.play_previous()
+    }
+
+    Shortcut {
+        sequence: "Esc"
+        context: Qt.WindowShortcut
+        onActivated: appController.stop()
+    }
+
     // Janela de projeção controlada pelo mesmo appController.
     Loader {
         source: "qrc:/letras_sync/presentation/projection.qml"
@@ -279,6 +327,29 @@ ApplicationWindow {
                         text: "Stop"
                         enabled: operatorWindow.hasMusic
                         onClicked: appController.stop()
+                    }
+
+                    Button {
+                        id: clearScreenButton
+                        text: appController.clear_screen ? "Mostrar Texto" : "Ocultar Texto"
+                        enabled: operatorWindow.hasMusic || appController.clear_screen
+                        onClicked: appController.toggle_clear_screen()
+                        background: Rectangle {
+                            radius: 4
+                            color: appController.clear_screen
+                                ? (clearScreenButton.down ? "#B71C1C" : "#D32F2F")
+                                : (clearScreenButton.down ? "#D9D9D9" : "#F2F2F2")
+                            border.color: appController.clear_screen ? "#8E0000" : "#BDBDBD"
+                            border.width: 1
+                        }
+                        contentItem: Text {
+                            text: clearScreenButton.text
+                            horizontalAlignment: Text.AlignHCenter
+                            verticalAlignment: Text.AlignVCenter
+                            color: appController.clear_screen ? "#FFFFFF" : "#222222"
+                            font: clearScreenButton.font
+                            elide: Text.ElideRight
+                        }
                     }
 
                     Button {

@@ -69,6 +69,9 @@ pub struct AppController {
     lyric_text: qt_property!(QString; NOTIFY lyric_text_changed),
     lyric_text_changed: qt_signal!(),
 
+    clear_screen: qt_property!(bool; NOTIFY clear_screen_changed),
+    clear_screen_changed: qt_signal!(),
+
     projection_visible: qt_property!(bool; NOTIFY projection_visible_changed),
     projection_visible_changed: qt_signal!(),
 
@@ -327,6 +330,11 @@ pub struct AppController {
         self.projection_visible_changed();
     }),
 
+    toggle_clear_screen: qt_method!(fn toggle_clear_screen(&mut self) {
+        self.clear_screen = !self.clear_screen;
+        self.clear_screen_changed();
+    }),
+
     set_font_size: qt_method!(fn set_font_size(&mut self, value: u32) {
         self.font_size = value;
         self.settings.font_size = value;
@@ -389,6 +397,7 @@ impl AppController {
         controller.background_color = QString::from(settings.background_color.as_str());
         controller.projector_screen_index =
             settings.projector_monitor.map(|m| m as i32).unwrap_or(-1);
+        controller.clear_screen = false;
         controller.player = Some(player);
         controller.timeline = Some(timeline);
         controller.playlist_handle = Some(playlist);
@@ -420,6 +429,8 @@ impl AppController {
         self.active_line_id_changed();
         self.lyric_text = QString::default();
         self.lyric_text_changed();
+        self.clear_screen = false;
+        self.clear_screen_changed();
 
         let Some(player) = self.player.clone() else {
             return;
@@ -706,6 +717,21 @@ impl AppController {
                 }
             }
         });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn load_url_resets_clear_screen() {
+        let mut controller = AppController::default();
+        controller.clear_screen = true;
+
+        controller.load_url("https://example.com/watch?v=test".to_string());
+
+        assert!(!controller.clear_screen);
     }
 }
 
