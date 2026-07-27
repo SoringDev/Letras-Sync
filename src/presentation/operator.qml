@@ -116,6 +116,60 @@ ApplicationWindow {
                     elide: Text.ElideRight
                 }
 
+                ColumnLayout {
+                    Layout.fillWidth: true
+                    spacing: 4
+
+                    Label {
+                        text: "Letras"
+                        font.bold: true
+                    }
+
+                    Label {
+                        Layout.fillWidth: true
+                        text: "Nenhuma letra carregada"
+                        color: "#666666"
+                        visible: appController.current_lyrics.length === 0
+                    }
+
+                    ListView {
+                        Layout.fillWidth: true
+                        Layout.preferredHeight: 160
+                        clip: true
+                        spacing: 4
+                        visible: appController.current_lyrics.length > 0
+                        model: appController.current_lyrics
+
+                        delegate: Rectangle {
+                            width: ListView.view.width
+                            height: Math.max(32, lineText.implicitHeight + 14)
+                            radius: 4
+                            color: modelData.id === appController.active_line_id
+                                ? "#FFF2B8"
+                                : "#F7F7F7"
+                            border.width: 1
+                            border.color: modelData.id === appController.active_line_id
+                                ? "#D6A100"
+                                : "#DDDDDD"
+
+                            Text {
+                                id: lineText
+                                anchors.fill: parent
+                                anchors.margins: 7
+                                text: modelData.text
+                                wrapMode: Text.WordWrap
+                                font.bold: modelData.id === appController.active_line_id
+                                color: "#222222"
+                            }
+
+                            MouseArea {
+                                anchors.fill: parent
+                                onClicked: appController.seek(modelData.start_time)
+                            }
+                        }
+                    }
+                }
+
                 Item {
                     Layout.fillHeight: true
                 }
@@ -247,6 +301,28 @@ ApplicationWindow {
                     Button {
                         text: appController.projection_visible ? "Ocultar" : "Projetar"
                         onClicked: appController.toggle_projection()
+                    }
+                }
+
+                RowLayout {
+                    Layout.fillWidth: true
+                    spacing: 8
+
+                    Label {
+                        text: "Volume"
+                    }
+
+                    Slider {
+                        Layout.fillWidth: true
+                        from: 0
+                        to: 100
+                        stepSize: 1
+                        value: appController.volume
+                        onMoved: appController.set_volume(Math.round(value))
+                    }
+
+                    Label {
+                        text: "🔊 " + Math.round(appController.volume) + "%"
                     }
                 }
 

@@ -114,6 +114,7 @@ mod tests {
             background_color: "#654321".to_string(),
             projector_monitor: Some(2),
             cache_path: "/tmp/custom-cache".to_string(),
+            volume: 80,
         };
 
         write_settings(&path, &settings).expect("gravar configurações");

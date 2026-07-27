@@ -1,5 +1,9 @@
 use serde::{Deserialize, Serialize};
 
+fn default_volume() -> u32 {
+    100
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Settings {
     pub font_size: u32,
@@ -8,6 +12,8 @@ pub struct Settings {
     pub background_color: String,
     pub projector_monitor: Option<u32>,
     pub cache_path: String,
+    #[serde(default = "default_volume")]
+    pub volume: u32,
 }
 
 impl Default for Settings {
@@ -19,6 +25,30 @@ impl Default for Settings {
             background_color: "#000000".to_string(),
             projector_monitor: None,
             cache_path: String::new(),
+            volume: default_volume(),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn volume_round_trips_through_toml() {
+        let settings = Settings {
+            font_size: 48,
+            font_family: "Sans".to_string(),
+            font_color: "#FFFF00".to_string(),
+            background_color: "#000000".to_string(),
+            projector_monitor: None,
+            cache_path: "/tmp/cache".to_string(),
+            volume: 73,
+        };
+
+        let encoded = toml::to_string(&settings).expect("serializar settings");
+        let decoded: Settings = toml::from_str(&encoded).expect("desserializar settings");
+
+        assert_eq!(decoded, settings);
     }
 }

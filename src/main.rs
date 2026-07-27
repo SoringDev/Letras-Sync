@@ -53,7 +53,13 @@ async fn main() -> anyhow::Result<()> {
         Arc::clone(&whisper),
     ));
 
-    let player = Player::new(audio_engine, youtube, lyrics, pool.clone());
+    let player = Player::new(
+        audio_engine,
+        youtube,
+        lyrics,
+        pool.clone(),
+        settings.volume as i64,
+    );
     let timeline = Timeline::new(Arc::clone(&player));
     let playlist = Arc::new(Playlist::new());
 

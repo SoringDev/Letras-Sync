@@ -48,6 +48,18 @@ impl AudioEngine {
             .map_err(|e| anyhow::anyhow!("{e:?}"))
     }
 
+    /// Ajusta o volume em porcentagem.
+    pub fn set_volume(&self, percent: i64) -> Result<()> {
+        self.mpv
+            .set_property("volume", percent)
+            .map_err(|e| anyhow::anyhow!("{e:?}"))
+    }
+
+    /// Lê o volume atual em porcentagem. Retorna 100 quando indisponível.
+    pub fn volume(&self) -> i64 {
+        self.mpv.get_property("volume").unwrap_or(100)
+    }
+
     /// Move a reprodução para a posição absoluta em segundos.
     pub fn seek(&self, seconds: f64) -> Result<()> {
         self.mpv
@@ -78,5 +90,24 @@ impl AudioEngine {
     /// quando não for possível consultá-la.
     pub fn is_idle(&self) -> bool {
         self.mpv.get_property("idle-active").unwrap_or(true)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn volume_can_be_set_and_read_when_mpv_is_available() {
+        let Ok(engine) = AudioEngine::new() else {
+            return;
+        };
+
+        let original = engine.volume();
+        engine.set_volume(73).expect("set volume");
+
+        assert_eq!(engine.volume(), 73);
+
+        let _ = engine.set_volume(original);
     }
 }

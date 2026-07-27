@@ -57,6 +57,9 @@ pub struct AppController {
     sync_offset: qt_property!(f64; NOTIFY sync_offset_changed),
     sync_offset_changed: qt_signal!(),
 
+    volume: qt_property!(i32; NOTIFY volume_changed),
+    volume_changed: qt_signal!(),
+
     music_title: qt_property!(QString; NOTIFY music_title_changed),
     music_title_changed: qt_signal!(),
 
@@ -77,6 +80,12 @@ pub struct AppController {
 
     loading_status: qt_property!(QString; NOTIFY loading_status_changed),
     loading_status_changed: qt_signal!(),
+
+    current_lyrics: qt_property!(QVariantList; NOTIFY current_lyrics_changed),
+    current_lyrics_changed: qt_signal!(),
+
+    active_line_id: qt_property!(i64; NOTIFY active_line_id_changed),
+    active_line_id_changed: qt_signal!(),
 
     playlist: qt_property!(QVariantList; NOTIFY playlist_changed),
     playlist_changed: qt_signal!(),
@@ -267,6 +276,22 @@ pub struct AppController {
         });
     }),
 
+    set_volume: qt_method!(fn set_volume(&mut self, value: i32) {
+        let value = value.clamp(0, 100);
+        self.volume = value;
+        self.volume_changed();
+        self.settings.volume = value as u32;
+        self.persist_settings();
+
+        if let Some(player) = self.player.clone() {
+            tokio::spawn(async move {
+                if let Err(err) = player.set_volume(value as i64).await {
+                    tracing::error!("falha ao ajustar o volume para {value}: {err:?}");
+                }
+            });
+        }
+    }),
+
     adjust_sync_offset: qt_method!(fn adjust_sync_offset(&mut self, delta: f64) {
         self.sync_offset += delta;
         self.sync_offset_changed();
@@ -275,7 +300,12 @@ pub struct AppController {
             let offset = self.sync_offset;
             tokio::spawn(async move {
                 timeline.set_offset(offset).await;
-                let _ = timeline.get_offset().await;
+                let confirmed = timeline.get_offset().await;
+                if (confirmed - offset).abs() > f64::EPSILON {
+                    tracing::warn!(
+                        "offset aplicado diverge do valor solicitado: solicitado={offset}, aplicado={confirmed}"
+                    );
+                }
             });
         }
     }),
@@ -352,6 +382,7 @@ impl AppController {
         let mut controller = AppController::default();
         controller.playback_state = QString::from(playback_state_label(PlaybackState::Idle));
         controller.sync_offset = 0.0;
+        controller.volume = settings.volume as i32;
         controller.font_size = settings.font_size;
         controller.font_family = QString::from(settings.font_family.as_str());
         controller.font_color = QString::from(settings.font_color.as_str());
@@ -363,6 +394,8 @@ impl AppController {
         controller.playlist_handle = Some(playlist);
         controller.pool = Some(pool);
         controller.settings = settings.clone();
+        controller.current_lyrics = QVariantList::default();
+        controller.active_line_id = -1;
         controller
     }
 
@@ -381,6 +414,12 @@ impl AppController {
     fn load_url(&mut self, url: String) {
         self.sync_offset = 0.0;
         self.sync_offset_changed();
+        self.current_lyrics = QVariantList::default();
+        self.current_lyrics_changed();
+        self.active_line_id = -1;
+        self.active_line_id_changed();
+        self.lyric_text = QString::default();
+        self.lyric_text_changed();
 
         let Some(player) = self.player.clone() else {
             return;
@@ -568,13 +607,31 @@ impl AppController {
                         this.loading = false;
                         this.loading_changed();
                     }
+                    if state == PlaybackState::Stopped {
+                        this.current_lyrics = QVariantList::default();
+                        this.current_lyrics_changed();
+                        this.active_line_id = -1;
+                        this.active_line_id_changed();
+                    }
                 }
-                PlayerEvent::MusicLoaded { music, .. } => {
+                PlayerEvent::MusicLoaded { music, lyrics } => {
                     this.music_title = QString::from(music.title.as_str());
                     this.music_artist =
                         QString::from(music.artist.unwrap_or_default().as_str());
                     this.music_title_changed();
                     this.music_artist_changed();
+                    let mut list = QVariantList::default();
+                    for line in lyrics {
+                        let mut map = QVariantMap::default();
+                        map.insert("id".into(), line.id.into());
+                        map.insert("start_time".into(), line.start_time.into());
+                        map.insert("text".into(), QString::from(line.text.as_str()).into());
+                        list.push(map.into());
+                    }
+                    this.current_lyrics = list;
+                    this.current_lyrics_changed();
+                    this.active_line_id = -1;
+                    this.active_line_id_changed();
                     if let Some(duration) = music.duration {
                         this.duration = duration as f64;
                         this.duration_changed();
@@ -595,6 +652,10 @@ impl AppController {
                 PlayerEvent::PlaybackFinished => {
                     this.current_time = 0.0;
                     this.current_time_changed();
+                    this.current_lyrics = QVariantList::default();
+                    this.current_lyrics_changed();
+                    this.active_line_id = -1;
+                    this.active_line_id_changed();
                     this.play_next();
                 }
                 PlayerEvent::LoadingStatus(status) => {
@@ -626,6 +687,8 @@ impl AppController {
             let mut this = pinned.borrow_mut();
             match event {
                 TimelineEvent::LineChanged(line) => {
+                    this.active_line_id = line.as_ref().map(|l| l.id).unwrap_or(-1);
+                    this.active_line_id_changed();
                     let text = line.map(|l| l.text).unwrap_or_default();
                     this.lyric_text = QString::from(text.as_str());
                     this.lyric_text_changed();

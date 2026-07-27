@@ -87,6 +87,7 @@ impl Player {
         youtube_service: Arc<YoutubeService>,
         lyrics_service: Arc<LyricsService>,
         pool: SqlitePool,
+        volume: i64,
     ) -> Arc<Self> {
         let (event_tx, _) = broadcast::channel(EVENT_CHANNEL_CAPACITY);
 
@@ -98,6 +99,17 @@ impl Player {
             state: Arc::new(RwLock::new(PlayerState::default())),
             event_tx,
         });
+
+        if let Err(err) = player.audio_engine.set_volume(volume) {
+            tracing::warn!("falha ao aplicar o volume inicial {volume}: {err:?}");
+        } else {
+            let applied_volume = player.audio_engine.volume();
+            if applied_volume != volume {
+                tracing::warn!(
+                    "volume inicial divergente após aplicação: solicitado={volume}, aplicado={applied_volume}"
+                );
+            }
+        }
 
         Self::spawn_poll_loop(&player);
 
@@ -190,6 +202,11 @@ impl Player {
     /// Move a reprodução em `delta` segundos relativos à posição atual.
     pub async fn seek_relative(&self, delta: f64) -> Result<()> {
         self.audio_engine.seek_relative(delta)
+    }
+
+    /// Ajusta o volume da reprodução em porcentagem.
+    pub async fn set_volume(&self, volume: i64) -> Result<()> {
+        self.audio_engine.set_volume(volume)
     }
 
     /// Remove do cache local as letras associadas à mídia da `youtube_url`.
@@ -384,7 +401,65 @@ mod tests {
             Arc::clone(&youtube),
             Arc::clone(&whisper),
         ));
-        Some(Player::new(audio_engine, youtube, lyrics, pool))
+        let settings = crate::domain::settings::Settings::default();
+        Some(Player::new(
+            audio_engine,
+            youtube,
+            lyrics,
+            pool,
+            settings.volume as i64,
+        ))
+    }
+
+    #[test]
+    fn music_loaded_event_preserves_lyrics_payload() {
+        let music = Music {
+            id: "m1".to_string(),
+            title: "Título".to_string(),
+            artist: Some("Artista".to_string()),
+            youtube_url: "https://youtu.be/m1".to_string(),
+            duration: Some(180),
+            thumbnail: None,
+            created_at: None,
+            has_lyrics: Some(true),
+        };
+        let lyrics = vec![
+            LyricsLine {
+                id: 1,
+                music_id: "m1".to_string(),
+                start_time: 0.0,
+                end_time: 1.0,
+                text: "linha 1".to_string(),
+            },
+            LyricsLine {
+                id: 2,
+                music_id: "m1".to_string(),
+                start_time: 1.0,
+                end_time: 2.0,
+                text: "linha 2".to_string(),
+            },
+        ];
+
+        let event = PlayerEvent::MusicLoaded {
+            music,
+            lyrics: lyrics.clone(),
+        };
+
+        match event {
+            PlayerEvent::MusicLoaded {
+                lyrics: payload, ..
+            } => {
+                assert_eq!(payload.len(), lyrics.len());
+                for (left, right) in payload.iter().zip(lyrics.iter()) {
+                    assert_eq!(left.id, right.id);
+                    assert_eq!(left.music_id, right.music_id);
+                    assert_eq!(left.start_time, right.start_time);
+                    assert_eq!(left.end_time, right.end_time);
+                    assert_eq!(left.text, right.text);
+                }
+            }
+            _ => panic!("evento inesperado"),
+        }
     }
 
     #[tokio::test]
