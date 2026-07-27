@@ -67,8 +67,9 @@ impl LyricsService {
                         srt_parser::parse(&vtt_content, music_id)
                     };
                     if !lines.is_empty() {
-                        self.persist(&repository, &lines).await;
-                        return Ok(lines);
+                        return Ok(self
+                            .persist_and_reload(&repository, music_id, &lines)
+                            .await);
                     }
                 }
                 Ok(None) => {}
@@ -83,8 +84,9 @@ impl LyricsService {
             Ok(Some(lrc_content)) => {
                 let lines = lrc_parser::parse(&lrc_content, music_id);
                 if !lines.is_empty() {
-                    self.persist(&repository, &lines).await;
-                    return Ok(lines);
+                    return Ok(self
+                        .persist_and_reload(&repository, music_id, &lines)
+                        .await);
                 }
             }
             Ok(None) => {}
@@ -96,8 +98,9 @@ impl LyricsService {
             on_status("Gerando sincronização de letras via IA Whisper (isso pode demorar)...");
             match self.whisper.transcribe(path, music_id).await {
                 Ok(lines) if !lines.is_empty() => {
-                    self.persist(&repository, &lines).await;
-                    return Ok(lines);
+                    return Ok(self
+                        .persist_and_reload(&repository, music_id, &lines)
+                        .await);
                 }
                 Ok(_) => {}
                 Err(e) => tracing::warn!("falha na transcrição do Whisper: {e}"),
@@ -124,6 +127,20 @@ impl LyricsService {
         }
     }
 
+    async fn persist_and_reload(
+        &self,
+        repository: &LyricsRepository<'_>,
+        music_id: &str,
+        lines: &[LyricsLine],
+    ) -> Vec<LyricsLine> {
+        self.persist(repository, lines).await;
+
+        match repository.find_by_music_id(music_id).await {
+            Ok(saved) if !saved.is_empty() => saved,
+            _ => lines.to_vec(),
+        }
+    }
+
     async fn fetch_from_lrclib(&self, query: &str) -> Result<Option<String>> {
         let client = reqwest::Client::builder()
             .timeout(Duration::from_secs(5))
@@ -140,5 +157,68 @@ impl LyricsService {
         Ok(results
             .into_iter()
             .find_map(|r| r.synced_lyrics.filter(|s| !s.is_empty())))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    use sqlx::sqlite::SqlitePool;
+
+    async fn memory_pool() -> SqlitePool {
+        let pool = SqlitePool::connect("sqlite::memory:")
+            .await
+            .expect("pool em memória");
+        sqlx::migrate!("./migrations")
+            .run(&pool)
+            .await
+            .expect("migrações");
+        pool
+    }
+
+    async fn insert_music(pool: &SqlitePool, id: &str) {
+        sqlx::query("INSERT INTO music (id, title, youtube_url) VALUES (?, ?, ?)")
+            .bind(id)
+            .bind(format!("Título {id}"))
+            .bind(format!("https://youtu.be/{id}"))
+            .execute(pool)
+            .await
+            .expect("insert music");
+    }
+
+    fn line(music_id: &str, start_time: f64, text: &str) -> LyricsLine {
+        LyricsLine {
+            id: 0,
+            music_id: music_id.to_string(),
+            start_time,
+            end_time: start_time + 1.0,
+            text: text.to_string(),
+        }
+    }
+
+    #[tokio::test]
+    async fn persist_and_reload_returns_saved_lines_with_generated_ids() {
+        let pool = memory_pool().await;
+        insert_music(&pool, "m1").await;
+
+        let service = LyricsService::new(
+            pool.clone(),
+            Arc::new(crate::infrastructure::youtube::YoutubeService::new()),
+            Arc::new(crate::infrastructure::whisper::WhisperService::new()),
+        );
+        let repository = LyricsRepository::new(&pool);
+        let original = vec![line("m1", 0.0, "primeira"), line("m1", 1.0, "segunda")];
+
+        let saved = service
+            .persist_and_reload(&repository, "m1", &original)
+            .await;
+
+        assert_eq!(saved.len(), 2);
+        assert!(saved.iter().all(|line| line.id > 0));
+        assert_ne!(saved[0].id, original[0].id);
+        assert_ne!(saved[1].id, original[1].id);
+        assert_eq!(saved[0].text, "primeira");
+        assert_eq!(saved[1].text, "segunda");
     }
 }

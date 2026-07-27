@@ -2,8 +2,8 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::{Context, Result};
-use std::path::{Path, PathBuf};
 use sqlx::sqlite::SqlitePool;
+use std::path::{Path, PathBuf};
 use tokio::sync::{RwLock, broadcast};
 
 use crate::domain::lyrics::LyricsLine;
@@ -11,7 +11,7 @@ use crate::domain::music::Music;
 use crate::infrastructure::audio::AudioEngine;
 use crate::infrastructure::music_repository::MusicRepository;
 use crate::infrastructure::youtube::YoutubeService;
-use crate::shared::utils::extract_video_id;
+use crate::shared::utils::{extract_video_id, normalize_youtube_url};
 
 use super::lyrics_service::LyricsService;
 
@@ -26,6 +26,11 @@ const EVENT_CHANNEL_CAPACITY: usize = 64;
 
 /// Nome exibido para mídias carregadas do sistema de arquivos local.
 const LOCAL_ARTIST_NAME: &str = "Arquivo Local";
+
+/// Extensões de áudio que podem existir no cache do `yt-dlp`.
+const CACHED_AUDIO_EXTENSIONS: &[&str] = &[
+    "mp3", "m4a", "webm", "opus", "ogg", "aac", "flac", "wav", "mp4", "mkv", "mka",
+];
 
 /// Estados possíveis do ciclo de vida da reprodução.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -77,10 +82,9 @@ async fn resolve_local_media_path(input: &str) -> Result<Option<PathBuf>> {
         Some(PathBuf::from(decode_file_uri_path(raw)))
     } else {
         let candidate = Path::new(input);
-        if tokio::fs::try_exists(candidate)
-            .await
-            .with_context(|| format!("falha ao verificar o caminho local {}", candidate.display()))?
-        {
+        if tokio::fs::try_exists(candidate).await.with_context(|| {
+            format!("falha ao verificar o caminho local {}", candidate.display())
+        })? {
             Some(candidate.to_path_buf())
         } else {
             None
@@ -88,11 +92,9 @@ async fn resolve_local_media_path(input: &str) -> Result<Option<PathBuf>> {
     };
 
     match path {
-        Some(path) => Ok(Some(
-            tokio::fs::canonicalize(&path)
-                .await
-                .with_context(|| format!("falha ao resolver o caminho local {}", path.display()))?,
-        )),
+        Some(path) => Ok(Some(tokio::fs::canonicalize(&path).await.with_context(
+            || format!("falha ao resolver o caminho local {}", path.display()),
+        )?)),
         None => Ok(None),
     }
 }
@@ -226,25 +228,27 @@ impl Player {
     }
 
     async fn load_remote_youtube(&self, url: &str) -> Result<()> {
-        let video_id = extract_video_id(url)
+        let canonical_url = normalize_youtube_url(url)
+            .ok_or_else(|| anyhow::anyhow!("não foi possível extrair o video_id da URL: {url}"))?;
+        let video_id = extract_video_id(&canonical_url)
             .ok_or_else(|| anyhow::anyhow!("não foi possível extrair o video_id da URL: {url}"))?;
 
         self.emit(PlayerEvent::LoadingStatus(
             "Buscando metadados da música...".to_string(),
         ));
-        let music = self.resolve_music(url).await?;
+        let music = self.resolve_music(&canonical_url).await?;
         let music_id = music.id.clone();
 
         self.set_status(PlaybackState::Loading).await;
 
-        let local_path = self.ensure_cached_audio(url, &video_id).await?;
+        let local_path = self.ensure_cached_audio(&canonical_url, &video_id).await?;
 
         self.emit(PlayerEvent::LoadingStatus(
             "Buscando legendas sincronizadas...".to_string(),
         ));
         let lyrics_service = self.lyrics_service.clone();
         let lyrics = lyrics_service
-            .get_lyrics(&music_id, url, Some(&local_path), &|status| {
+            .get_lyrics(&music_id, &canonical_url, Some(&local_path), &|status| {
                 self.emit(PlayerEvent::LoadingStatus(status.to_string()));
             })
             .await
@@ -356,6 +360,21 @@ impl Player {
         self.audio_engine.set_volume(volume)
     }
 
+    /// Atualiza e persiste o offset de sincronismo da música ativa.
+    pub async fn update_sync_offset(&self, offset: f64) -> Result<()> {
+        let music_id = {
+            let mut state = self.state.write().await;
+            let Some(music) = state.current_music.as_mut() else {
+                anyhow::bail!("nenhuma música ativa para atualizar o sync_offset");
+            };
+            music.sync_offset = offset;
+            music.id.clone()
+        };
+
+        let repository = MusicRepository::new(&self.pool);
+        repository.update_sync_offset(&music_id, offset).await
+    }
+
     /// Remove do cache local as letras associadas à mídia da `youtube_url`.
     pub async fn clear_lyrics_cache(&self, youtube_url: &str) -> Result<()> {
         let music_id = media_music_id(youtube_url).await?;
@@ -380,7 +399,9 @@ impl Player {
                 .current_lyrics
                 .iter_mut()
                 .find(|line| line.id == id)
-                .ok_or_else(|| anyhow::anyhow!("linha de letra inexistente no estado ativo: {id}"))?;
+                .ok_or_else(|| {
+                    anyhow::anyhow!("linha de letra inexistente no estado ativo: {id}")
+                })?;
             line.text = new_text.to_string();
             state.current_lyrics.clone()
         };
@@ -417,11 +438,7 @@ impl Player {
     /// Retorna o caminho do arquivo local. Se já existir, é um *cache hit* e o
     /// arquivo é reutilizado; caso contrário, dispara o download via yt-dlp.
     /// Em falha de download, reverte o estado para `Stopped` e propaga o erro.
-    async fn ensure_cached_audio(
-        &self,
-        url: &str,
-        video_id: &str,
-    ) -> Result<std::path::PathBuf> {
+    async fn ensure_cached_audio(&self, url: &str, video_id: &str) -> Result<std::path::PathBuf> {
         let settings = crate::shared::config::load_settings()?;
         let cache_dir = std::path::Path::new(&settings.cache_path);
 
@@ -438,16 +455,7 @@ impl Player {
                 )
             })?;
 
-        let local_path = cache_dir.join(format!("{video_id}.mp3"));
-
-        let exists = tokio::fs::try_exists(&local_path).await.with_context(|| {
-            format!(
-                "falha ao verificar o cache de áudio {}",
-                local_path.display()
-            )
-        })?;
-
-        if exists {
+        if let Some(local_path) = find_cached_audio(cache_dir, video_id).await? {
             tracing::info!(
                 "cache hit: reproduzindo {video_id} a partir de {}",
                 local_path.display()
@@ -461,16 +469,24 @@ impl Player {
             "Baixando áudio do YouTube (isso pode demorar)...".to_string(),
         ));
 
+        let output_template = cache_dir.join(format!("{video_id}.%(ext)s"));
+
         if let Err(e) = self
             .youtube_service
-            .download_audio(url, &local_path)
+            .download_audio(url, &output_template)
             .await
         {
             self.set_status(PlaybackState::Stopped).await;
             return Err(e);
         }
 
-        Ok(local_path)
+        find_cached_audio(cache_dir, video_id)
+            .await?
+            .with_context(|| {
+                format!(
+                    "yt-dlp concluiu o download, mas o arquivo não foi encontrado no cache para {video_id}"
+                )
+            })
     }
 
     /// Obtém a música do cache local ou, na ausência, dos metadados do YouTube.
@@ -512,6 +528,7 @@ impl Player {
             duration: None,
             thumbnail: None,
             created_at: None,
+            sync_offset: 0.0,
             has_lyrics: None,
         };
 
@@ -578,6 +595,22 @@ fn should_emit_position(last: f64, current: f64) -> bool {
         return true;
     }
     (current - last).abs() >= POSITION_EPSILON
+}
+
+async fn find_cached_audio(cache_dir: &Path, video_id: &str) -> Result<Option<PathBuf>> {
+    for extension in CACHED_AUDIO_EXTENSIONS {
+        let candidate = cache_dir.join(format!("{video_id}.{extension}"));
+        if tokio::fs::try_exists(&candidate).await.with_context(|| {
+            format!(
+                "falha ao verificar o cache de áudio {}",
+                candidate.display()
+            )
+        })? {
+            return Ok(Some(candidate));
+        }
+    }
+
+    Ok(None)
 }
 
 #[cfg(test)]
@@ -713,6 +746,7 @@ mod tests {
             duration: Some(180),
             thumbnail: None,
             created_at: None,
+            sync_offset: 0.0,
             has_lyrics: Some(true),
         };
         let lyrics = vec![
@@ -841,6 +875,7 @@ mod tests {
             duration: Some(120),
             thumbnail: None,
             created_at: Some("2024-01-01 00:00:00".to_string()),
+            sync_offset: 0.0,
             has_lyrics: Some(true),
         };
 
@@ -909,6 +944,55 @@ mod tests {
         }
     }
 
+    #[tokio::test]
+    async fn update_sync_offset_persists_active_music_offset() {
+        let pool = memory_pool().await;
+        let Some(player) = build_player(pool.clone()) else {
+            return;
+        };
+
+        let music = Music {
+            id: "offset-music".to_string(),
+            title: "Título".to_string(),
+            artist: Some("Artista".to_string()),
+            youtube_url: "https://youtu.be/offset-music".to_string(),
+            duration: Some(120),
+            thumbnail: None,
+            created_at: Some("2024-01-01 00:00:00".to_string()),
+            sync_offset: 0.0,
+            has_lyrics: Some(true),
+        };
+
+        MusicRepository::new(&pool)
+            .save(&music)
+            .await
+            .expect("save music");
+
+        {
+            let mut state = player.state.write().await;
+            state.current_music = Some(music.clone());
+        }
+
+        player
+            .update_sync_offset(2.25)
+            .await
+            .expect("update sync offset");
+
+        {
+            let state = player.state.read().await;
+            let current = state.current_music.as_ref().expect("current music");
+            assert_eq!(current.sync_offset, 2.25);
+        }
+
+        let stored = MusicRepository::new(&pool)
+            .find_by_youtube_url(&music.youtube_url)
+            .await
+            .expect("find music")
+            .expect("music exists");
+
+        assert_eq!(stored.sync_offset, 2.25);
+    }
+
     // ----- Testes do cache de áudio local. -----
     //
     // Dependem do `AudioEngine` (libmpv). Quando o libmpv não está disponível
@@ -932,7 +1016,9 @@ mod tests {
 
         let video_id = "cache_hit_test_id";
         let local_path = cache_dir.join(format!("{video_id}.mp3"));
-        tokio::fs::write(&local_path, b"fake").await.expect("mp3 fake");
+        tokio::fs::write(&local_path, b"fake")
+            .await
+            .expect("mp3 fake");
 
         let result = player
             .ensure_cached_audio("https://youtu.be/cache_hit_test_id", video_id)
@@ -942,6 +1028,30 @@ mod tests {
         assert_eq!(result, local_path);
 
         let _ = tokio::fs::remove_file(&local_path).await;
+    }
+
+    #[tokio::test]
+    async fn find_cached_audio_accepts_non_mp3_extensions() {
+        let temp_dir = std::env::temp_dir().join("letras_sync_cache_variant_test");
+        if tokio::fs::create_dir_all(&temp_dir).await.is_err() {
+            return;
+        }
+
+        let video_id = "cache_variant_test_id";
+        let candidate = temp_dir.join(format!("{video_id}.webm"));
+        if tokio::fs::write(&candidate, b"fake").await.is_err() {
+            let _ = tokio::fs::remove_dir_all(&temp_dir).await;
+            return;
+        }
+
+        let found = find_cached_audio(&temp_dir, video_id)
+            .await
+            .expect("buscar cache variant");
+
+        assert_eq!(found, Some(candidate));
+
+        let _ = tokio::fs::remove_file(temp_dir.join(format!("{video_id}.webm"))).await;
+        let _ = tokio::fs::remove_dir_all(&temp_dir).await;
     }
 
     #[tokio::test]
@@ -978,6 +1088,7 @@ mod tests {
             duration: None,
             thumbnail: None,
             created_at: None,
+            sync_offset: 1.25,
             has_lyrics: None,
         };
 
@@ -1016,6 +1127,7 @@ mod tests {
             assert_eq!(current.id, expected_id);
             assert_eq!(current.title, "letras_sync_local_load_test");
             assert_eq!(current.artist.as_deref(), Some(LOCAL_ARTIST_NAME));
+            assert_eq!(current.sync_offset, 1.25);
             assert_eq!(state.current_lyrics.len(), 1);
             assert_eq!(state.current_lyrics[0].text, "linha local");
         }

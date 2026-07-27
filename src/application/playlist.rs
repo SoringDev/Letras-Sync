@@ -115,6 +115,7 @@ mod tests {
             duration: None,
             thumbnail: None,
             created_at: None,
+            sync_offset: 0.0,
             has_lyrics: None,
         }
     }

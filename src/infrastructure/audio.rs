@@ -85,15 +85,12 @@ impl AudioEngine {
 
     /// Posição atual em segundos. Retorna 0.0 quando ainda não disponível.
     pub fn position(&self) -> f64 {
-        self.get_property_string("time-pos")
-            .and_then(|value| value.parse::<f64>().ok())
-            .unwrap_or(0.0)
+        self.get_property_double("time-pos").unwrap_or(0.0)
     }
 
     /// Duração total em segundos, ou None quando não disponível.
     pub fn duration(&self) -> Option<f64> {
-        self.get_property_string("duration")
-            .and_then(|value| value.parse::<f64>().ok())
+        self.get_property_double("duration")
     }
 
     /// Indica se o mpv está ocioso (sem mídia em reprodução).
@@ -101,9 +98,7 @@ impl AudioEngine {
     /// Retorna `true` quando a propriedade `idle-active` estiver ativa ou
     /// quando não for possível consultá-la.
     pub fn is_idle(&self) -> bool {
-        self.get_property_string("idle-active")
-            .map(|value| matches!(value.as_str(), "yes" | "true" | "1"))
-            .unwrap_or(true)
+        self.get_property_bool("idle-active").unwrap_or(true)
     }
 
     fn initialize(&self) -> Result<()> {
@@ -130,22 +125,6 @@ impl AudioEngine {
         )
     }
 
-    fn get_property_string(&self, name: &str) -> Option<String> {
-        let name = CString::new(name).ok()?;
-        let raw = unsafe { mpv::mpv_get_property_string(self.ctx(), name.as_ptr()) };
-        let raw = NonNull::new(raw)?;
-
-        let value = unsafe { CStr::from_ptr(raw.as_ptr()) }
-            .to_string_lossy()
-            .into_owned();
-
-        unsafe {
-            mpv::mpv_free(raw.as_ptr() as *mut c_void);
-        }
-
-        Some(value)
-    }
-
     fn get_property_int64(&self, name: &str) -> Option<i64> {
         let name = CString::new(name).ok()?;
         let mut value: i64 = 0;
@@ -164,6 +143,46 @@ impl AudioEngine {
         }
 
         Some(value)
+    }
+
+    fn get_property_double(&self, name: &str) -> Option<f64> {
+        let name = CString::new(name).ok()?;
+        let mut value: f64 = 0.0;
+
+        let code = unsafe {
+            mpv::mpv_get_property(
+                self.ctx(),
+                name.as_ptr(),
+                mpv::mpv_format_MPV_FORMAT_DOUBLE,
+                &mut value as *mut f64 as *mut c_void,
+            )
+        };
+
+        if code < 0 {
+            return None;
+        }
+
+        Some(value)
+    }
+
+    fn get_property_bool(&self, name: &str) -> Option<bool> {
+        let name = CString::new(name).ok()?;
+        let mut value: i32 = 0;
+
+        let code = unsafe {
+            mpv::mpv_get_property(
+                self.ctx(),
+                name.as_ptr(),
+                mpv::mpv_format_MPV_FORMAT_FLAG,
+                &mut value as *mut i32 as *mut c_void,
+            )
+        };
+
+        if code < 0 {
+            return None;
+        }
+
+        Some(value != 0)
     }
 
     fn command(&self, args: &[&str]) -> Result<()> {

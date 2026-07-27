@@ -9,6 +9,7 @@ pub struct Music {
     pub duration: Option<i64>,
     pub thumbnail: Option<String>,
     pub created_at: Option<String>,
+    pub sync_offset: f64,
     #[sqlx(default)]
     pub has_lyrics: Option<bool>,
 }

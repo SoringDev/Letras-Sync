@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use qmetaobject::prelude::*;
-use qmetaobject::{queued_callback, QObjectBox, QPointer, QVariantList, QVariantMap};
+use qmetaobject::{QObjectBox, QPointer, QVariantList, QVariantMap, queued_callback};
 use sqlx::sqlite::SqlitePool;
 use tokio::fs;
 use tokio::sync::broadcast;
@@ -11,9 +11,9 @@ use crate::application::playlist::Playlist;
 use crate::application::timeline::{Timeline, TimelineEvent};
 use crate::domain::music::Music;
 use crate::domain::settings::Settings;
+use crate::infrastructure::lyrics_repository::LyricsRepository;
 use crate::infrastructure::music_repository::MusicRepository;
 use crate::infrastructure::providers::{lrc_parser, lyrics_export, srt_parser, vtt_parser};
-use crate::infrastructure::lyrics_repository::LyricsRepository;
 
 qrc!(register_qml_resources,
     "letras_sync/presentation" {
@@ -36,6 +36,10 @@ fn playback_state_label(state: PlaybackState) -> &'static str {
         PlaybackState::Paused => "Paused",
         PlaybackState::Stopped => "Stopped",
     }
+}
+
+fn can_seek(duration: f64, seconds: f64) -> bool {
+    duration > 0.0 && seconds.is_finite() && seconds >= 0.0
 }
 
 fn qml_path_to_pathbuf(file_path: &str) -> std::path::PathBuf {
@@ -123,472 +127,538 @@ pub struct AppController {
     history_search_query: qt_property!(QString; NOTIFY history_search_query_changed),
     history_search_query_changed: qt_signal!(),
 
-    load_music: qt_method!(fn load_music(&mut self, url: QString) {
-        self.load_url(url.to_string());
-    }),
-
-    add_to_playlist: qt_method!(fn add_to_playlist(&mut self, url: QString) {
-        let Some(player) = self.player.clone() else {
-            return;
-        };
-        let Some(playlist) = self.playlist_handle.clone() else {
-            return;
-        };
-
-        let qptr = QPointer::from(&*self);
-        let refresh = queued_callback(move |()| {
-            if let Some(pinned) = qptr.as_pinned() {
-                pinned.borrow().spawn_playlist_refresh();
-            }
-        });
-
-        let url = url.to_string();
-        tokio::spawn(async move {
-            match player.resolve_music(&url).await {
-                Ok(music) => {
-                    playlist.add(music).await;
-                    refresh(());
-                }
-                Err(err) => {
-                    tracing::error!("falha ao resolver a música para a playlist {url}: {err:?}")
-                }
-            }
-        });
-    }),
-
-    remove_from_playlist: qt_method!(fn remove_from_playlist(&mut self, index: i32) {
-        let Some(playlist) = self.playlist_handle.clone() else {
-            return;
-        };
-        if index < 0 {
-            return;
+    load_music: qt_method!(
+        fn load_music(&mut self, url: QString) {
+            self.load_url(url.to_string());
         }
-        let index = index as usize;
+    ),
 
-        let qptr = QPointer::from(&*self);
-        let refresh = queued_callback(move |()| {
-            if let Some(pinned) = qptr.as_pinned() {
-                pinned.borrow().spawn_playlist_refresh();
-            }
-        });
+    add_to_playlist: qt_method!(
+        fn add_to_playlist(&mut self, url: QString) {
+            let Some(player) = self.player.clone() else {
+                return;
+            };
+            let Some(playlist) = self.playlist_handle.clone() else {
+                return;
+            };
 
-        tokio::spawn(async move {
-            playlist.remove(index).await;
-            refresh(());
-        });
-    }),
+            let qptr = QPointer::from(&*self);
+            let refresh = queued_callback(move |()| {
+                if let Some(pinned) = qptr.as_pinned() {
+                    pinned.borrow().spawn_playlist_refresh();
+                }
+            });
 
-    play_playlist_item: qt_method!(fn play_playlist_item(&mut self, index: i32) {
-        let Some(playlist) = self.playlist_handle.clone() else {
-            return;
-        };
-        if index < 0 {
-            return;
-        }
-        let index = index as usize;
-
-        let qptr = QPointer::from(&*self);
-        let start = queued_callback(move |url: String| {
-            if let Some(pinned) = qptr.as_pinned() {
-                pinned.borrow_mut().load_url(url);
-            }
-        });
-
-        tokio::spawn(async move {
-            playlist.set_current_index(Some(index)).await;
-            if let Some(music) = playlist.current_music().await {
-                start(music.youtube_url);
-            }
-        });
-    }),
-
-    play_next: qt_method!(fn play_next(&mut self) {
-        let Some(playlist) = self.playlist_handle.clone() else {
-            return;
-        };
-
-        let qptr = QPointer::from(&*self);
-        let start = queued_callback(move |url: String| {
-            if let Some(pinned) = qptr.as_pinned() {
-                pinned.borrow_mut().load_url(url);
-            }
-        });
-
-        tokio::spawn(async move {
-            if let Some(music) = playlist.next().await {
-                start(music.youtube_url);
-            }
-        });
-    }),
-
-    play_previous: qt_method!(fn play_previous(&mut self) {
-        let Some(playlist) = self.playlist_handle.clone() else {
-            return;
-        };
-
-        let qptr = QPointer::from(&*self);
-        let start = queued_callback(move |url: String| {
-            if let Some(pinned) = qptr.as_pinned() {
-                pinned.borrow_mut().load_url(url);
-            }
-        });
-
-        tokio::spawn(async move {
-            if let Some(music) = playlist.prev().await {
-                start(music.youtube_url);
-            }
-        });
-    }),
-
-    refresh_history: qt_method!(fn refresh_history(&self) {
-        self.spawn_history_refresh();
-    }),
-
-    set_history_search_query: qt_method!(fn set_history_search_query(&mut self, query: QString) {
-        self.history_search_query = query;
-        self.history_search_query_changed();
-        self.spawn_history_refresh();
-    }),
-
-    play: qt_method!(fn play(&self) {
-        let Some(player) = self.player.clone() else {
-            return;
-        };
-        tokio::spawn(async move {
-            if let Err(err) = player.play().await {
-                tracing::error!("falha ao retomar a reprodução: {err:?}");
-            }
-        });
-    }),
-
-    pause: qt_method!(fn pause(&self) {
-        let Some(player) = self.player.clone() else {
-            return;
-        };
-        tokio::spawn(async move {
-            if let Err(err) = player.pause().await {
-                tracing::error!("falha ao pausar a reprodução: {err:?}");
-            }
-        });
-    }),
-
-    stop: qt_method!(fn stop(&self) {
-        let Some(player) = self.player.clone() else {
-            return;
-        };
-        tokio::spawn(async move {
-            if let Err(err) = player.stop().await {
-                tracing::error!("falha ao interromper a reprodução: {err:?}");
-            }
-        });
-    }),
-
-    seek: qt_method!(fn seek(&self, seconds: f64) {
-        let Some(player) = self.player.clone() else {
-            return;
-        };
-        tokio::spawn(async move {
-            if let Err(err) = player.seek(seconds).await {
-                tracing::error!("falha ao reposicionar a reprodução: {err:?}");
-            }
-        });
-    }),
-
-    seek_relative: qt_method!(fn seek_relative(&self, delta: f64) {
-        let Some(player) = self.player.clone() else {
-            return;
-        };
-        tokio::spawn(async move {
-            if let Err(err) = player.seek_relative(delta).await {
-                tracing::error!("falha ao reposicionar a reprodução: {err:?}");
-            }
-        });
-    }),
-
-    set_volume: qt_method!(fn set_volume(&mut self, value: i32) {
-        let value = value.clamp(0, 100);
-        self.volume = value;
-        self.volume_changed();
-        self.settings.volume = value as u32;
-        self.persist_settings();
-
-        if let Some(player) = self.player.clone() {
+            let url = url.to_string();
             tokio::spawn(async move {
-                if let Err(err) = player.set_volume(value as i64).await {
-                    tracing::error!("falha ao ajustar o volume para {value}: {err:?}");
+                match player.resolve_music(&url).await {
+                    Ok(music) => {
+                        playlist.add(music).await;
+                        refresh(());
+                    }
+                    Err(err) => {
+                        tracing::error!("falha ao resolver a música para a playlist {url}: {err:?}")
+                    }
                 }
             });
         }
-    }),
+    ),
 
-    adjust_sync_offset: qt_method!(fn adjust_sync_offset(&mut self, delta: f64) {
-        self.sync_offset += delta;
-        self.sync_offset_changed();
+    remove_from_playlist: qt_method!(
+        fn remove_from_playlist(&mut self, index: i32) {
+            let Some(playlist) = self.playlist_handle.clone() else {
+                return;
+            };
+            if index < 0 {
+                return;
+            }
+            let index = index as usize;
 
-        if let Some(timeline) = self.timeline.clone() {
+            let qptr = QPointer::from(&*self);
+            let refresh = queued_callback(move |()| {
+                if let Some(pinned) = qptr.as_pinned() {
+                    pinned.borrow().spawn_playlist_refresh();
+                }
+            });
+
+            tokio::spawn(async move {
+                playlist.remove(index).await;
+                refresh(());
+            });
+        }
+    ),
+
+    play_playlist_item: qt_method!(
+        fn play_playlist_item(&mut self, index: i32) {
+            let Some(playlist) = self.playlist_handle.clone() else {
+                return;
+            };
+            if index < 0 {
+                return;
+            }
+            let index = index as usize;
+
+            let qptr = QPointer::from(&*self);
+            let start = queued_callback(move |url: String| {
+                if let Some(pinned) = qptr.as_pinned() {
+                    pinned.borrow_mut().load_url(url);
+                }
+            });
+
+            tokio::spawn(async move {
+                playlist.set_current_index(Some(index)).await;
+                if let Some(music) = playlist.current_music().await {
+                    start(music.youtube_url);
+                }
+            });
+        }
+    ),
+
+    play_next: qt_method!(
+        fn play_next(&mut self) {
+            let Some(playlist) = self.playlist_handle.clone() else {
+                return;
+            };
+
+            let qptr = QPointer::from(&*self);
+            let start = queued_callback(move |url: String| {
+                if let Some(pinned) = qptr.as_pinned() {
+                    pinned.borrow_mut().load_url(url);
+                }
+            });
+
+            tokio::spawn(async move {
+                if let Some(music) = playlist.next().await {
+                    start(music.youtube_url);
+                }
+            });
+        }
+    ),
+
+    play_previous: qt_method!(
+        fn play_previous(&mut self) {
+            let Some(playlist) = self.playlist_handle.clone() else {
+                return;
+            };
+
+            let qptr = QPointer::from(&*self);
+            let start = queued_callback(move |url: String| {
+                if let Some(pinned) = qptr.as_pinned() {
+                    pinned.borrow_mut().load_url(url);
+                }
+            });
+
+            tokio::spawn(async move {
+                if let Some(music) = playlist.prev().await {
+                    start(music.youtube_url);
+                }
+            });
+        }
+    ),
+
+    refresh_history: qt_method!(
+        fn refresh_history(&self) {
+            self.spawn_history_refresh();
+        }
+    ),
+
+    set_history_search_query: qt_method!(
+        fn set_history_search_query(&mut self, query: QString) {
+            self.history_search_query = query;
+            self.history_search_query_changed();
+            self.spawn_history_refresh();
+        }
+    ),
+
+    play: qt_method!(
+        fn play(&self) {
+            let Some(player) = self.player.clone() else {
+                return;
+            };
+            tokio::spawn(async move {
+                if let Err(err) = player.play().await {
+                    tracing::error!("falha ao retomar a reprodução: {err:?}");
+                }
+            });
+        }
+    ),
+
+    pause: qt_method!(
+        fn pause(&self) {
+            let Some(player) = self.player.clone() else {
+                return;
+            };
+            tokio::spawn(async move {
+                if let Err(err) = player.pause().await {
+                    tracing::error!("falha ao pausar a reprodução: {err:?}");
+                }
+            });
+        }
+    ),
+
+    stop: qt_method!(
+        fn stop(&self) {
+            let Some(player) = self.player.clone() else {
+                return;
+            };
+            tokio::spawn(async move {
+                if let Err(err) = player.stop().await {
+                    tracing::error!("falha ao interromper a reprodução: {err:?}");
+                }
+            });
+        }
+    ),
+
+    seek: qt_method!(
+        fn seek(&self, seconds: f64) {
+            if !can_seek(self.duration, seconds) {
+                return;
+            }
+
+            let Some(player) = self.player.clone() else {
+                return;
+            };
+            tokio::spawn(async move {
+                if let Err(err) = player.seek(seconds).await {
+                    tracing::error!("falha ao reposicionar a reprodução: {err:?}");
+                }
+            });
+        }
+    ),
+
+    seek_relative: qt_method!(
+        fn seek_relative(&self, delta: f64) {
+            let Some(player) = self.player.clone() else {
+                return;
+            };
+            tokio::spawn(async move {
+                if let Err(err) = player.seek_relative(delta).await {
+                    tracing::error!("falha ao reposicionar a reprodução: {err:?}");
+                }
+            });
+        }
+    ),
+
+    set_volume: qt_method!(
+        fn set_volume(&mut self, value: i32) {
+            let value = value.clamp(0, 100);
+            self.volume = value;
+            self.volume_changed();
+            self.settings.volume = value as u32;
+            self.persist_settings();
+
+            if let Some(player) = self.player.clone() {
+                tokio::spawn(async move {
+                    if let Err(err) = player.set_volume(value as i64).await {
+                        tracing::error!("falha ao ajustar o volume para {value}: {err:?}");
+                    }
+                });
+            }
+        }
+    ),
+
+    adjust_sync_offset: qt_method!(
+        fn adjust_sync_offset(&mut self, delta: f64) {
+            self.sync_offset += delta;
+            self.sync_offset_changed();
+
             let offset = self.sync_offset;
+            if let Some(timeline) = self.timeline.clone() {
+                tokio::spawn(async move {
+                    timeline.set_offset(offset).await;
+                    let confirmed = timeline.get_offset().await;
+                    if (confirmed - offset).abs() > f64::EPSILON {
+                        tracing::warn!(
+                            "offset aplicado diverge do valor solicitado: solicitado={offset}, aplicado={confirmed}"
+                        );
+                    }
+                });
+            }
+
+            if let Some(player) = self.player.clone() {
+                tokio::spawn(async move {
+                    if let Err(err) = player.update_sync_offset(offset).await {
+                        tracing::error!("falha ao persistir o sync_offset {offset}: {err:?}");
+                    }
+                });
+            }
+        }
+    ),
+
+    clear_lyrics: qt_method!(
+        fn clear_lyrics(&self, url: QString) {
+            let Some(player) = self.player.clone() else {
+                return;
+            };
+            let url = url.to_string();
             tokio::spawn(async move {
-                timeline.set_offset(offset).await;
-                let confirmed = timeline.get_offset().await;
-                if (confirmed - offset).abs() > f64::EPSILON {
-                    tracing::warn!(
-                        "offset aplicado diverge do valor solicitado: solicitado={offset}, aplicado={confirmed}"
-                    );
+                if let Err(err) = player.clear_lyrics_cache(&url).await {
+                    tracing::error!("falha ao limpar o cache de letras {url}: {err:?}");
                 }
             });
         }
-    }),
+    ),
 
-    clear_lyrics: qt_method!(fn clear_lyrics(&self, url: QString) {
-        let Some(player) = self.player.clone() else {
-            return;
-        };
-        let url = url.to_string();
-        tokio::spawn(async move {
-            if let Err(err) = player.clear_lyrics_cache(&url).await {
-                tracing::error!("falha ao limpar o cache de letras {url}: {err:?}");
-            }
-        });
-    }),
+    export_lyrics: qt_method!(
+        fn export_lyrics(&self, music_id: QString, file_path: QString, format: QString) -> bool {
+            let music_id = music_id.to_string();
+            let file_path = file_path.to_string();
+            let format = format.to_string().to_lowercase();
+            let qptr = QPointer::from(self);
+            let show_message = queued_callback(move |msg: String| {
+                if let Some(pinned) = qptr.as_pinned() {
+                    let mut this = pinned.borrow_mut();
+                    this.error_message = QString::from(msg.as_str());
+                    this.error_message_changed();
+                }
+            });
 
-    export_lyrics: qt_method!(fn export_lyrics(&self, music_id: QString, file_path: QString, format: QString) -> bool {
-        let music_id = music_id.to_string();
-        let file_path = file_path.to_string();
-        let format = format.to_string().to_lowercase();
-        let qptr = QPointer::from(self);
-        let show_message = queued_callback(move |msg: String| {
-            if let Some(pinned) = qptr.as_pinned() {
-                let mut this = pinned.borrow_mut();
-                this.error_message = QString::from(msg.as_str());
-                this.error_message_changed();
-            }
-        });
-
-        if music_id.trim().is_empty() {
-            show_message("Erro: nenhuma música selecionada".to_string());
-            return false;
-        }
-
-        let Some(pool) = self.pool.clone() else {
-            show_message("Erro: banco de dados indisponível".to_string());
-            return false;
-        };
-
-        let format_name = match format.as_str() {
-            "lrc" => "LRC",
-            "srt" => "SRT",
-            _ => {
-                show_message("Erro: formato de exportação inválido".to_string());
+            if music_id.trim().is_empty() {
+                show_message("Erro: nenhuma música selecionada".to_string());
                 return false;
             }
-        };
 
-        let path = qml_path_to_pathbuf(&file_path);
+            let Some(pool) = self.pool.clone() else {
+                show_message("Erro: banco de dados indisponível".to_string());
+                return false;
+            };
 
-        tokio::spawn(async move {
-            let repository = LyricsRepository::new(&pool);
-            match repository.find_by_music_id(&music_id).await {
-                Ok(lines) => {
-                    let content = match format.as_str() {
-                        "lrc" => lyrics_export::format_lrc(&lines),
-                        "srt" => lyrics_export::format_srt(&lines),
-                        _ => String::new(),
-                    };
-
-                    if let Some(parent) = path.parent()
-                        && !parent.as_os_str().is_empty()
-                        && let Err(err) = fs::create_dir_all(parent).await
-                    {
-                        show_message(format!(
-                            "Erro: falha ao criar o diretório de destino: {err}"
-                        ));
-                        return;
-                    }
-
-                    if let Err(err) = fs::write(&path, content).await {
-                        show_message(format!("Erro: falha ao salvar o arquivo: {err}"));
-                        return;
-                    }
-
-                    show_message(format!("OK: Letras exportadas em {format_name}"));
+            let format_name = match format.as_str() {
+                "lrc" => "LRC",
+                "srt" => "SRT",
+                _ => {
+                    show_message("Erro: formato de exportação inválido".to_string());
+                    return false;
                 }
-                Err(err) => {
-                    show_message(format!("Erro: falha ao exportar letras: {err}"));
+            };
+
+            let path = qml_path_to_pathbuf(&file_path);
+
+            tokio::spawn(async move {
+                let repository = LyricsRepository::new(&pool);
+                match repository.find_by_music_id(&music_id).await {
+                    Ok(lines) => {
+                        let content = match format.as_str() {
+                            "lrc" => lyrics_export::format_lrc(&lines),
+                            "srt" => lyrics_export::format_srt(&lines),
+                            _ => String::new(),
+                        };
+
+                        if let Some(parent) = path.parent()
+                            && !parent.as_os_str().is_empty()
+                            && let Err(err) = fs::create_dir_all(parent).await
+                        {
+                            show_message(format!(
+                                "Erro: falha ao criar o diretório de destino: {err}"
+                            ));
+                            return;
+                        }
+
+                        if let Err(err) = fs::write(&path, content).await {
+                            show_message(format!("Erro: falha ao salvar o arquivo: {err}"));
+                            return;
+                        }
+
+                        show_message(format!("OK: Letras exportadas em {format_name}"));
+                    }
+                    Err(err) => {
+                        show_message(format!("Erro: falha ao exportar letras: {err}"));
+                    }
                 }
-            }
-        });
+            });
 
-        true
-    }),
-
-    import_lyrics: qt_method!(fn import_lyrics(&mut self, music_id: QString, file_path: QString) -> bool {
-        let music_id = music_id.to_string();
-        let file_path = file_path.to_string();
-
-        if music_id.trim().is_empty() {
-            self.error_message = QString::from("Erro: nenhuma música selecionada");
-            self.error_message_changed();
-            return false;
+            true
         }
+    ),
 
-        let Some(pool) = self.pool.clone() else {
-            self.error_message = QString::from("Erro: banco de dados indisponível");
-            self.error_message_changed();
-            return false;
-        };
+    import_lyrics: qt_method!(
+        fn import_lyrics(&mut self, music_id: QString, file_path: QString) -> bool {
+            let music_id = music_id.to_string();
+            let file_path = file_path.to_string();
 
-        let Some(player) = self.player.clone() else {
-            self.error_message = QString::from("Erro: player indisponível");
-            self.error_message_changed();
-            return false;
-        };
-
-        let path = qml_path_to_pathbuf(&file_path);
-        let extension = match path.extension().and_then(|ext| ext.to_str()) {
-            Some(ext) => ext.to_lowercase(),
-            None => {
-                self.error_message = QString::from("Erro: arquivo sem extensão suportada");
+            if music_id.trim().is_empty() {
+                self.error_message = QString::from("Erro: nenhuma música selecionada");
                 self.error_message_changed();
                 return false;
             }
-        };
 
-        let parser_name = match extension.as_str() {
-            "lrc" => "LRC",
-            "srt" => "SRT",
-            "vtt" => "VTT",
-            _ => {
-                self.error_message = QString::from("Erro: formato de importação inválido");
+            let Some(pool) = self.pool.clone() else {
+                self.error_message = QString::from("Erro: banco de dados indisponível");
                 self.error_message_changed();
                 return false;
-            }
-        };
+            };
 
-        let active_music_id = self.current_music_id.to_string();
-        let qptr = QPointer::from(&*self);
-        let show_message = queued_callback(move |msg: String| {
-            if let Some(pinned) = qptr.as_pinned() {
-                let mut this = pinned.borrow_mut();
-                this.error_message = QString::from(msg.as_str());
-                this.error_message_changed();
-            }
-        });
+            let Some(player) = self.player.clone() else {
+                self.error_message = QString::from("Erro: player indisponível");
+                self.error_message_changed();
+                return false;
+            };
 
-        tokio::spawn(async move {
-            let content = match fs::read_to_string(&path).await {
-                Ok(content) => content,
-                Err(err) => {
-                    show_message(format!("Erro: falha ao ler o arquivo: {err}"));
+            let path = qml_path_to_pathbuf(&file_path);
+            let extension = match path.extension().and_then(|ext| ext.to_str()) {
+                Some(ext) => ext.to_lowercase(),
+                None => {
+                    self.error_message = QString::from("Erro: arquivo sem extensão suportada");
+                    self.error_message_changed();
+                    return false;
+                }
+            };
+
+            let parser_name = match extension.as_str() {
+                "lrc" => "LRC",
+                "srt" => "SRT",
+                "vtt" => "VTT",
+                _ => {
+                    self.error_message = QString::from("Erro: formato de importação inválido");
+                    self.error_message_changed();
+                    return false;
+                }
+            };
+
+            let active_music_id = self.current_music_id.to_string();
+            let qptr = QPointer::from(&*self);
+            let show_message = queued_callback(move |msg: String| {
+                if let Some(pinned) = qptr.as_pinned() {
+                    let mut this = pinned.borrow_mut();
+                    this.error_message = QString::from(msg.as_str());
+                    this.error_message_changed();
+                }
+            });
+
+            tokio::spawn(async move {
+                let content = match fs::read_to_string(&path).await {
+                    Ok(content) => content,
+                    Err(err) => {
+                        show_message(format!("Erro: falha ao ler o arquivo: {err}"));
+                        return;
+                    }
+                };
+
+                let repository = LyricsRepository::new(&pool);
+                let lines = match extension.as_str() {
+                    "lrc" => lrc_parser::parse(&content, &music_id),
+                    "srt" => srt_parser::parse(&content, &music_id),
+                    "vtt" => vtt_parser::parse(&content, &music_id),
+                    _ => Vec::new(),
+                };
+
+                if lines.is_empty() {
+                    show_message(format!(
+                        "Erro: nenhum verso válido encontrado no arquivo {parser_name}"
+                    ));
                     return;
                 }
-            };
 
-            let repository = LyricsRepository::new(&pool);
-            let lines = match extension.as_str() {
-                "lrc" => lrc_parser::parse(&content, &music_id),
-                "srt" => srt_parser::parse(&content, &music_id),
-                "vtt" => vtt_parser::parse(&content, &music_id),
-                _ => Vec::new(),
-            };
+                if let Err(err) = repository.delete_by_music_id(&music_id).await {
+                    show_message(format!("Erro: falha ao substituir as letras: {err}"));
+                    return;
+                }
 
-            if lines.is_empty() {
-                show_message(format!(
-                    "Erro: nenhum verso válido encontrado no arquivo {parser_name}"
-                ));
-                return;
-            }
+                if let Err(err) = repository.save_all(&lines).await {
+                    show_message(format!("Erro: falha ao salvar as letras importadas: {err}"));
+                    return;
+                }
 
-            if let Err(err) = repository.delete_by_music_id(&music_id).await {
-                show_message(format!("Erro: falha ao substituir as letras: {err}"));
-                return;
-            }
-
-            if let Err(err) = repository.save_all(&lines).await {
-                show_message(format!("Erro: falha ao salvar as letras importadas: {err}"));
-                return;
-            }
-
-            if active_music_id == music_id {
-                match repository.find_by_music_id(&music_id).await {
-                    Ok(saved_lines) => {
-                        if let Err(err) = player.replace_current_lyrics(&music_id, saved_lines).await {
+                if active_music_id == music_id {
+                    match repository.find_by_music_id(&music_id).await {
+                        Ok(saved_lines) => {
+                            if let Err(err) =
+                                player.replace_current_lyrics(&music_id, saved_lines).await
+                            {
+                                show_message(format!(
+                                    "Erro: falha ao recarregar as letras ativas: {err}"
+                                ));
+                                return;
+                            }
+                        }
+                        Err(err) => {
                             show_message(format!(
-                                "Erro: falha ao recarregar as letras ativas: {err}"
+                                "Erro: letras importadas, mas falha ao recarregar a UI: {err}"
                             ));
                             return;
                         }
                     }
-                    Err(err) => {
-                        show_message(format!(
-                            "Erro: letras importadas, mas falha ao recarregar a UI: {err}"
-                        ));
-                        return;
-                    }
                 }
-            }
 
-            show_message("OK: Letras importadas".to_string());
-        });
+                show_message("OK: Letras importadas".to_string());
+            });
 
-        true
-    }),
+            true
+        }
+    ),
 
-    update_lyric_line: qt_method!(fn update_lyric_line(&mut self, id: i64, new_text: QString) {
-        let Some(player) = self.player.clone() else {
-            return;
-        };
-        let new_text = new_text.to_string();
-        tokio::spawn(async move {
-            if let Err(err) = player.update_lyrics_line(id, &new_text).await {
-                tracing::error!("falha ao atualizar a linha de letra {id}: {err:?}");
-            }
-        });
-    }),
+    update_lyric_line: qt_method!(
+        fn update_lyric_line(&mut self, id: i64, new_text: QString) {
+            let Some(player) = self.player.clone() else {
+                return;
+            };
+            let new_text = new_text.to_string();
+            tokio::spawn(async move {
+                if let Err(err) = player.update_lyrics_line(id, &new_text).await {
+                    tracing::error!("falha ao atualizar a linha de letra {id}: {err:?}");
+                }
+            });
+        }
+    ),
 
-    toggle_projection: qt_method!(fn toggle_projection(&mut self) {
-        self.projection_visible = !self.projection_visible;
-        self.projection_visible_changed();
-    }),
+    toggle_projection: qt_method!(
+        fn toggle_projection(&mut self) {
+            self.projection_visible = !self.projection_visible;
+            self.projection_visible_changed();
+        }
+    ),
 
-    toggle_clear_screen: qt_method!(fn toggle_clear_screen(&mut self) {
-        self.clear_screen = !self.clear_screen;
-        self.clear_screen_changed();
-    }),
+    toggle_clear_screen: qt_method!(
+        fn toggle_clear_screen(&mut self) {
+            self.clear_screen = !self.clear_screen;
+            self.clear_screen_changed();
+        }
+    ),
 
-    set_font_size: qt_method!(fn set_font_size(&mut self, value: u32) {
-        self.font_size = value;
-        self.settings.font_size = value;
-        self.style_changed();
-        self.persist_settings();
-    }),
+    set_font_size: qt_method!(
+        fn set_font_size(&mut self, value: u32) {
+            self.font_size = value;
+            self.settings.font_size = value;
+            self.style_changed();
+            self.persist_settings();
+        }
+    ),
 
-    set_font_family: qt_method!(fn set_font_family(&mut self, value: QString) {
-        self.font_family = value.clone();
-        self.settings.font_family = value.to_string();
-        self.style_changed();
-        self.persist_settings();
-    }),
+    set_font_family: qt_method!(
+        fn set_font_family(&mut self, value: QString) {
+            self.font_family = value.clone();
+            self.settings.font_family = value.to_string();
+            self.style_changed();
+            self.persist_settings();
+        }
+    ),
 
-    set_font_color: qt_method!(fn set_font_color(&mut self, value: QString) {
-        self.font_color = value.clone();
-        self.settings.font_color = value.to_string();
-        self.style_changed();
-        self.persist_settings();
-    }),
+    set_font_color: qt_method!(
+        fn set_font_color(&mut self, value: QString) {
+            self.font_color = value.clone();
+            self.settings.font_color = value.to_string();
+            self.style_changed();
+            self.persist_settings();
+        }
+    ),
 
-    set_background_color: qt_method!(fn set_background_color(&mut self, value: QString) {
-        self.background_color = value.clone();
-        self.settings.background_color = value.to_string();
-        self.style_changed();
-        self.persist_settings();
-    }),
+    set_background_color: qt_method!(
+        fn set_background_color(&mut self, value: QString) {
+            self.background_color = value.clone();
+            self.settings.background_color = value.to_string();
+            self.style_changed();
+            self.persist_settings();
+        }
+    ),
 
-    set_projector_screen_index: qt_method!(fn set_projector_screen_index(&mut self, value: i32) {
-        self.projector_screen_index = value;
-        self.settings.projector_monitor = if value < 0 { None } else { Some(value as u32) };
-        self.style_changed();
-        self.persist_settings();
-    }),
+    set_projector_screen_index: qt_method!(
+        fn set_projector_screen_index(&mut self, value: i32) {
+            self.projector_screen_index = value;
+            self.settings.projector_monitor = if value < 0 { None } else { Some(value as u32) };
+            self.style_changed();
+            self.persist_settings();
+        }
+    ),
 
     player: Option<Arc<Player>>,
     timeline: Option<Arc<Timeline>>,
@@ -644,8 +714,6 @@ impl AppController {
     /// `Player` em uma tarefa de segundo plano, propagando eventuais falhas ao
     /// QML pelo mesmo padrão `QPointer` + `queued_callback`.
     fn load_url(&mut self, url: String) {
-        self.sync_offset = 0.0;
-        self.sync_offset_changed();
         self.current_lyrics = QVariantList::default();
         self.current_lyrics_changed();
         self.current_music_id = QString::default();
@@ -662,11 +730,6 @@ impl AppController {
         let Some(player) = self.player.clone() else {
             return;
         };
-        if let Some(timeline) = self.timeline.clone() {
-            tokio::spawn(async move {
-                timeline.set_offset(0.0).await;
-            });
-        }
         self.error_message = QString::default();
         self.error_message_changed();
         self.loading_status = QString::default();
@@ -858,16 +921,19 @@ impl AppController {
                         this.current_music_id_changed();
                         this.active_line_id = -1;
                         this.active_line_id_changed();
+                        this.sync_offset = 0.0;
+                        this.sync_offset_changed();
                     }
                 }
                 PlayerEvent::MusicLoaded { music, lyrics } => {
                     this.music_title = QString::from(music.title.as_str());
-                    this.music_artist =
-                        QString::from(music.artist.unwrap_or_default().as_str());
+                    this.music_artist = QString::from(music.artist.unwrap_or_default().as_str());
                     this.music_title_changed();
                     this.music_artist_changed();
                     this.current_music_id = QString::from(music.id.as_str());
                     this.current_music_id_changed();
+                    this.sync_offset = music.sync_offset;
+                    this.sync_offset_changed();
                     let mut list = QVariantList::default();
                     for line in lyrics {
                         let mut map = QVariantMap::default();
@@ -985,6 +1051,16 @@ mod tests {
 
         assert!(!controller.clear_screen);
     }
+
+    #[test]
+    fn can_seek_requires_positive_duration_and_finite_position() {
+        assert!(!can_seek(0.0, 10.0));
+        assert!(!can_seek(-1.0, 10.0));
+        assert!(!can_seek(120.0, f64::NAN));
+        assert!(!can_seek(120.0, -1.0));
+        assert!(can_seek(120.0, 0.0));
+        assert!(can_seek(120.0, 119.5));
+    }
 }
 
 /// Inicializa a interface do operador e a janela de projeção.
@@ -1008,8 +1084,9 @@ pub fn run_operator_ui(
 
     register_qml_resources();
 
-    let controller =
-        QObjectBox::new(AppController::new(player, timeline, playlist, pool, &settings));
+    let controller = QObjectBox::new(AppController::new(
+        player, timeline, playlist, pool, &settings,
+    ));
     let pinned = controller.pinned();
 
     let mut engine = QmlEngine::new();

@@ -261,12 +261,25 @@ ApplicationWindow {
                     }
 
                     ListView {
+                        id: lyricsListView
                         Layout.fillWidth: true
                         Layout.preferredHeight: 160
                         clip: true
                         spacing: 4
                         visible: appController.current_lyrics.length > 0
                         model: appController.current_lyrics
+                        currentIndex: {
+                            for (var i = 0; i < appController.current_lyrics.length; i++) {
+                                if (appController.current_lyrics[i].id === appController.active_line_id)
+                                    return i;
+                            }
+                            return -1;
+                        }
+
+                        onCurrentIndexChanged: {
+                            if (currentIndex >= 0)
+                                positionViewAtIndex(currentIndex, ListView.Center)
+                        }
 
                         delegate: Rectangle {
                             width: ListView.view.width
@@ -597,6 +610,7 @@ ApplicationWindow {
                     Slider {
                         id: progressSlider
                         Layout.fillWidth: true
+                        enabled: operatorWindow.hasMusic && appController.duration > 0
                         from: 0
                         to: appController.duration > 0 ? appController.duration : 1
 
@@ -604,7 +618,14 @@ ApplicationWindow {
                         // arrastando, evitando loop de seek.
                         value: pressed ? value : appController.current_time
 
-                        onMoved: appController.seek(value)
+                        onMoved: {
+                            if (appController.duration > 0)
+                                appController.seek(value)
+                        }
+                        onPressedChanged: {
+                            if (!pressed && appController.duration > 0)
+                                appController.seek(value)
+                        }
                     }
 
                     Label {

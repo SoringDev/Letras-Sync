@@ -83,16 +83,17 @@ impl Timeline {
     /// Processa um evento recebido do player e atualiza o estado da timeline.
     async fn handle_player_event(&self, event: PlayerEvent) {
         match event {
-            PlayerEvent::MusicLoaded { lyrics, .. } => {
+            PlayerEvent::MusicLoaded { music, lyrics } => {
                 let mut state = self.state.write().await;
                 state.lyrics = lyrics;
                 state.active_line = None;
                 state.position = 0.0;
+                state.offset = music.sync_offset;
+                let adjusted_position = state.position + state.offset;
+                let (active, next) = active_and_next_line(&state.lyrics, adjusted_position);
+                state.active_line = active.clone();
                 drop(state);
-                self.emit(TimelineEvent::LineChanged {
-                    active: None,
-                    next: None,
-                });
+                self.emit(TimelineEvent::LineChanged { active, next });
             }
             PlayerEvent::LyricsUpdated(lyrics) => {
                 let mut state = self.state.write().await;
@@ -103,12 +104,12 @@ impl Timeline {
                 drop(state);
                 self.emit(TimelineEvent::LineChanged { active, next });
             }
-            PlayerEvent::StateChanged(PlaybackState::Stopped)
-            | PlayerEvent::PlaybackFinished => {
+            PlayerEvent::StateChanged(PlaybackState::Stopped) | PlayerEvent::PlaybackFinished => {
                 let mut state = self.state.write().await;
                 state.lyrics = Vec::new();
                 state.active_line = None;
                 state.position = 0.0;
+                state.offset = 0.0;
                 drop(state);
                 self.emit(TimelineEvent::LineChanged {
                     active: None,

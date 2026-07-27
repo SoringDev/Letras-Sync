@@ -35,7 +35,7 @@ def main():
     output_path = sys.argv[2]
 
     model = WhisperModel("small", device="cpu", compute_type="int8")
-    segments, _ = model.transcribe(audio_path)
+    segments, _ = model.transcribe(audio_path, language="pt")
 
     with open(output_path, "w", encoding="utf-8") as handle:
         handle.write("WEBVTT\n\n")
@@ -197,6 +197,11 @@ mod tests {
         // O fluxo deve completar sem erro; o áudio silencioso pode produzir
         // zero linhas, o que é aceitável.
         assert!(result.is_ok());
+    }
+
+    #[test]
+    fn transcribe_script_is_pinned_to_portuguese() {
+        assert!(TRANSCRIBE_SCRIPT.contains(r#"language="pt""#));
     }
 
     /// Escreve um WAV PCM de 1 segundo em silêncio para servir de entrada.

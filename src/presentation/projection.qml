@@ -32,7 +32,7 @@ Window {
             Layout.fillWidth: true
             horizontalAlignment: Text.AlignHCenter
             wrapMode: Text.WordWrap
-            text: appController.clear_screen ? "" : appController.lyric_text
+            text: appController.clear_screen ? "" : appController.lyric_text.toUpperCase()
             color: appController.font_color
             font.pixelSize: appController.font_size
             font.family: appController.font_family
@@ -42,7 +42,7 @@ Window {
             Layout.fillWidth: true
             horizontalAlignment: Text.AlignHCenter
             wrapMode: Text.WordWrap
-            text: appController.clear_screen ? "" : appController.next_lyric_text
+            text: appController.clear_screen ? "" : appController.next_lyric_text.toUpperCase()
             color: "#D0D0D0"
             opacity: 0.72
             font.pixelSize: Math.max(12, Math.round(appController.font_size * 0.6))

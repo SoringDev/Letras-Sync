@@ -16,8 +16,8 @@ impl<'a> MusicRepository<'a> {
     pub async fn save(&self, music: &Music) -> Result<()> {
         sqlx::query(
             "INSERT OR REPLACE INTO music \
-             (id, title, artist, youtube_url, duration, thumbnail, created_at) \
-             VALUES (?, ?, ?, ?, ?, ?, ?)",
+             (id, title, artist, youtube_url, duration, thumbnail, created_at, sync_offset) \
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
         )
         .bind(&music.id)
         .bind(&music.title)
@@ -26,6 +26,7 @@ impl<'a> MusicRepository<'a> {
         .bind(music.duration)
         .bind(&music.thumbnail)
         .bind(&music.created_at)
+        .bind(music.sync_offset)
         .execute(self.pool)
         .await
         .with_context(|| format!("falha ao salvar a música {}", music.id))?;
@@ -44,31 +45,31 @@ impl<'a> MusicRepository<'a> {
     }
 
     pub async fn list_all(&self, search_query: Option<&str>) -> Result<Vec<Music>> {
-        let music = if let Some(search_query) = search_query.map(str::trim).filter(|q| !q.is_empty())
-        {
-            let pattern = format!("%{search_query}%");
-            sqlx::query_as::<_, Music>(
-                "SELECT m.*, \
+        let music =
+            if let Some(search_query) = search_query.map(str::trim).filter(|q| !q.is_empty()) {
+                let pattern = format!("%{search_query}%");
+                sqlx::query_as::<_, Music>(
+                    "SELECT m.*, \
                  EXISTS(SELECT 1 FROM lyrics_line l WHERE l.music_id = m.id) AS has_lyrics \
                  FROM music m \
                  WHERE m.title LIKE ? OR m.artist LIKE ? \
                  ORDER BY m.created_at DESC",
-            )
-            .bind(&pattern)
-            .bind(&pattern)
-            .fetch_all(self.pool)
-            .await
-            .context("falha ao listar as músicas")?
-        } else {
-            sqlx::query_as::<_, Music>(
-                "SELECT m.*, \
+                )
+                .bind(&pattern)
+                .bind(&pattern)
+                .fetch_all(self.pool)
+                .await
+                .context("falha ao listar as músicas")?
+            } else {
+                sqlx::query_as::<_, Music>(
+                    "SELECT m.*, \
                  EXISTS(SELECT 1 FROM lyrics_line l WHERE l.music_id = m.id) AS has_lyrics \
                  FROM music m ORDER BY m.created_at DESC",
-            )
-            .fetch_all(self.pool)
-            .await
-            .context("falha ao listar as músicas")?
-        };
+                )
+                .fetch_all(self.pool)
+                .await
+                .context("falha ao listar as músicas")?
+            };
 
         Ok(music)
     }
@@ -83,6 +84,21 @@ impl<'a> MusicRepository<'a> {
                 .with_context(|| format!("falha ao verificar letras da música {}", music_id))?;
 
         Ok(exists)
+    }
+
+    pub async fn update_sync_offset(&self, music_id: &str, offset: f64) -> Result<()> {
+        let result = sqlx::query("UPDATE music SET sync_offset = ? WHERE id = ?")
+            .bind(offset)
+            .bind(music_id)
+            .execute(self.pool)
+            .await
+            .with_context(|| format!("falha ao atualizar o sync_offset da música {}", music_id))?;
+
+        if result.rows_affected() == 0 {
+            anyhow::bail!("música inexistente: {music_id}");
+        }
+
+        Ok(())
     }
 }
 
@@ -110,6 +126,7 @@ mod tests {
             duration: Some(180),
             thumbnail: None,
             created_at: Some(created_at.to_string()),
+            sync_offset: 0.0,
             has_lyrics: None,
         }
     }
@@ -119,7 +136,13 @@ mod tests {
         let pool = memory_pool().await;
         let repository = MusicRepository::new(&pool);
 
-        assert!(repository.list_all(None).await.expect("list_all").is_empty());
+        assert!(
+            repository
+                .list_all(None)
+                .await
+                .expect("list_all")
+                .is_empty()
+        );
     }
 
     #[tokio::test]
@@ -139,6 +162,7 @@ mod tests {
         assert_eq!(all[0].title, "Título abc");
         assert_eq!(all[0].artist.as_deref(), Some("Artista abc"));
         assert_eq!(all[0].youtube_url, "https://youtu.be/abc");
+        assert_eq!(all[0].sync_offset, 0.0);
     }
 
     #[tokio::test]
@@ -212,6 +236,7 @@ mod tests {
                 duration: Some(180),
                 thumbnail: None,
                 created_at: Some("2024-01-01 00:00:00".to_string()),
+                sync_offset: 0.0,
                 has_lyrics: None,
             })
             .await
@@ -225,17 +250,39 @@ mod tests {
                 duration: Some(180),
                 thumbnail: None,
                 created_at: Some("2024-02-01 00:00:00".to_string()),
+                sync_offset: 0.0,
                 has_lyrics: None,
             })
             .await
             .expect("save other");
 
-        let filtered = repository
-            .list_all(Some("termo"))
-            .await
-            .expect("list_all");
+        let filtered = repository.list_all(Some("termo")).await.expect("list_all");
 
         assert_eq!(filtered.len(), 1);
         assert_eq!(filtered[0].id, "match");
+    }
+
+    #[tokio::test]
+    async fn update_sync_offset_persists_only_offset() {
+        let pool = memory_pool().await;
+        let repository = MusicRepository::new(&pool);
+
+        let music = sample("offset", "2024-01-01 00:00:00");
+        repository.save(&music).await.expect("save");
+
+        repository
+            .update_sync_offset("offset", 1.5)
+            .await
+            .expect("update offset");
+
+        let stored = repository
+            .find_by_youtube_url("https://youtu.be/offset")
+            .await
+            .expect("find music")
+            .expect("music exists");
+
+        assert_eq!(stored.sync_offset, 1.5);
+        assert_eq!(stored.title, music.title);
+        assert_eq!(stored.artist, music.artist);
     }
 }
