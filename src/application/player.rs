@@ -9,8 +9,8 @@ use crate::domain::lyrics::LyricsLine;
 use crate::domain::music::Music;
 use crate::infrastructure::audio::AudioEngine;
 use crate::infrastructure::music_repository::MusicRepository;
-use crate::infrastructure::whisper::WhisperService;
 use crate::infrastructure::youtube::YoutubeService;
+use crate::shared::utils::extract_video_id;
 
 use super::lyrics_service::LyricsService;
 
@@ -74,7 +74,6 @@ pub struct Player {
     audio_engine: Arc<AudioEngine>,
     youtube_service: Arc<YoutubeService>,
     lyrics_service: Arc<LyricsService>,
-    whisper_service: Arc<WhisperService>,
     pool: SqlitePool,
     state: Arc<RwLock<PlayerState>>,
     event_tx: broadcast::Sender<PlayerEvent>,
@@ -86,7 +85,6 @@ impl Player {
         audio_engine: Arc<AudioEngine>,
         youtube_service: Arc<YoutubeService>,
         lyrics_service: Arc<LyricsService>,
-        whisper_service: Arc<WhisperService>,
         pool: SqlitePool,
     ) -> Arc<Self> {
         let (event_tx, _) = broadcast::channel(EVENT_CHANNEL_CAPACITY);
@@ -95,7 +93,6 @@ impl Player {
             audio_engine,
             youtube_service,
             lyrics_service,
-            whisper_service,
             pool,
             state: Arc::new(RwLock::new(PlayerState::default())),
             event_tx,
@@ -109,11 +106,6 @@ impl Player {
     /// Assina o canal de eventos reativos do player.
     pub fn subscribe(&self) -> broadcast::Receiver<PlayerEvent> {
         self.event_tx.subscribe()
-    }
-
-    /// Retorna o status atual da reprodução.
-    pub async fn status(&self) -> PlaybackState {
-        self.state.read().await.status
     }
 
     /// Carrega uma mídia do YouTube e inicia a reprodução.
@@ -311,56 +303,12 @@ fn should_emit_position(last: f64, current: f64) -> bool {
     (current - last).abs() >= POSITION_EPSILON
 }
 
-/// Extrai o `video_id` de uma URL do YouTube.
-///
-/// Suporta o parâmetro `v=` da query string e o formato curto `youtu.be/<id>`.
-/// Retorna `None` se nenhum padrão for reconhecido.
-fn extract_video_id(url: &str) -> Option<String> {
-    if let Some(idx) = url.find("v=") {
-        let rest = &url[idx + 2..];
-        let id = rest.split('&').next().unwrap_or(rest);
-        if !id.is_empty() {
-            return Some(id.to_string());
-        }
-    }
-
-    if let Some(idx) = url.find("youtu.be/") {
-        let rest = &url[idx + "youtu.be/".len()..];
-        let id = rest.split(['?', '&', '/']).next().unwrap_or(rest);
-        if !id.is_empty() {
-            return Some(id.to_string());
-        }
-    }
-
-    None
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::infrastructure::whisper::WhisperService;
 
     // ----- Testes das funções puras (independentes de mpv/yt-dlp). -----
-
-    #[test]
-    fn extract_video_id_from_query_param() {
-        assert_eq!(
-            extract_video_id("https://www.youtube.com/watch?v=abc123"),
-            Some("abc123".to_string())
-        );
-    }
-
-    #[test]
-    fn extract_video_id_from_short_url() {
-        assert_eq!(
-            extract_video_id("https://youtu.be/abc123?t=10"),
-            Some("abc123".to_string())
-        );
-    }
-
-    #[test]
-    fn extract_video_id_returns_none_for_unknown_url() {
-        assert_eq!(extract_video_id("https://example.com/x"), None);
-    }
 
     #[test]
     fn should_emit_position_on_first_read() {
@@ -405,7 +353,7 @@ mod tests {
             Arc::clone(&youtube),
             Arc::clone(&whisper),
         ));
-        Some(Player::new(audio_engine, youtube, lyrics, whisper, pool))
+        Some(Player::new(audio_engine, youtube, lyrics, pool))
     }
 
     #[tokio::test]
@@ -414,7 +362,7 @@ mod tests {
         let Some(player) = build_player(pool) else {
             return;
         };
-        assert_eq!(player.status().await, PlaybackState::Idle);
+        assert_eq!(player.state.read().await.status, PlaybackState::Idle);
     }
 
     #[tokio::test]
@@ -427,7 +375,7 @@ mod tests {
 
         player.pause().await.expect("pause");
 
-        assert_eq!(player.status().await, PlaybackState::Paused);
+        assert_eq!(player.state.read().await.status, PlaybackState::Paused);
         let event = rx.recv().await.expect("evento");
         assert!(matches!(
             event,
@@ -444,7 +392,7 @@ mod tests {
 
         player.play().await.expect("play");
 
-        assert_eq!(player.status().await, PlaybackState::Playing);
+        assert_eq!(player.state.read().await.status, PlaybackState::Playing);
     }
 
     #[tokio::test]
@@ -457,7 +405,7 @@ mod tests {
 
         player.stop().await.expect("stop");
 
-        assert_eq!(player.status().await, PlaybackState::Stopped);
+        assert_eq!(player.state.read().await.status, PlaybackState::Stopped);
         {
             let state = player.state.read().await;
             assert!(state.current_music.is_none());

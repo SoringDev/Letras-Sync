@@ -33,16 +33,6 @@ impl<'a> MusicRepository<'a> {
         Ok(())
     }
 
-    pub async fn find_by_id(&self, id: &str) -> Result<Option<Music>> {
-        let music = sqlx::query_as::<_, Music>("SELECT * FROM music WHERE id = ?")
-            .bind(id)
-            .fetch_optional(self.pool)
-            .await
-            .with_context(|| format!("falha ao buscar a música por id {}", id))?;
-
-        Ok(music)
-    }
-
     pub async fn find_by_youtube_url(&self, url: &str) -> Result<Option<Music>> {
         let music = sqlx::query_as::<_, Music>("SELECT * FROM music WHERE youtube_url = ?")
             .bind(url)
@@ -51,14 +41,5 @@ impl<'a> MusicRepository<'a> {
             .with_context(|| format!("falha ao buscar a música por youtube_url {}", url))?;
 
         Ok(music)
-    }
-
-    pub async fn list_all(&self) -> Result<Vec<Music>> {
-        let musics = sqlx::query_as::<_, Music>("SELECT * FROM music")
-            .fetch_all(self.pool)
-            .await
-            .context("falha ao listar as músicas")?;
-
-        Ok(musics)
     }
 }

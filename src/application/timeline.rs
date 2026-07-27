@@ -54,16 +54,6 @@ impl Timeline {
         self.event_tx.subscribe()
     }
 
-    /// Retorna a linha de letra atualmente ativa.
-    pub async fn active_line(&self) -> Option<LyricsLine> {
-        self.state.read().await.active_line.clone()
-    }
-
-    /// Retorna a lista de letras atualmente carregada.
-    pub async fn current_lyrics(&self) -> Vec<LyricsLine> {
-        self.state.read().await.lyrics.clone()
-    }
-
     /// Propaga um evento, ignorando a ausência de assinantes.
     fn emit(&self, event: TimelineEvent) {
         let _ = self.event_tx.send(event);

@@ -6,9 +6,10 @@ use serde::Deserialize;
 
 use crate::domain::lyrics::LyricsLine;
 use crate::infrastructure::lyrics_repository::LyricsRepository;
-use crate::infrastructure::providers::{lrc_parser, vtt_parser};
+use crate::infrastructure::providers::{lrc_parser, srt_parser, vtt_parser};
 use crate::infrastructure::whisper::WhisperService;
 use crate::infrastructure::youtube::YoutubeService;
+use crate::shared::utils::extract_video_id;
 
 use sqlx::sqlite::SqlitePool;
 
@@ -59,7 +60,11 @@ impl LyricsService {
         if let Some(video_id) = extract_video_id(youtube_url) {
             match self.youtube.fetch_captions(&video_id).await {
                 Ok(Some(vtt_content)) => {
-                    let lines = vtt_parser::parse(&vtt_content, music_id);
+                    let lines = if vtt_content.trim_start().starts_with("WEBVTT") {
+                        vtt_parser::parse(&vtt_content, music_id)
+                    } else {
+                        srt_parser::parse(&vtt_content, music_id)
+                    };
                     if !lines.is_empty() {
                         self.persist(&repository, &lines).await;
                         return Ok(lines);
@@ -123,71 +128,5 @@ impl LyricsService {
         Ok(results
             .into_iter()
             .find_map(|r| r.synced_lyrics.filter(|s| !s.is_empty())))
-    }
-}
-
-/// Extrai o `video_id` de uma URL do YouTube.
-///
-/// Suporta o parâmetro `v=` da query string e o formato curto `youtu.be/<id>`.
-/// Retorna `None` se nenhum padrão for reconhecido.
-fn extract_video_id(url: &str) -> Option<String> {
-    if let Some(idx) = url.find("v=") {
-        let rest = &url[idx + 2..];
-        let id = rest.split('&').next().unwrap_or(rest);
-        if !id.is_empty() {
-            return Some(id.to_string());
-        }
-    }
-
-    if let Some(idx) = url.find("youtu.be/") {
-        let rest = &url[idx + "youtu.be/".len()..];
-        let id = rest.split(['?', '&', '/']).next().unwrap_or(rest);
-        if !id.is_empty() {
-            return Some(id.to_string());
-        }
-    }
-
-    None
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn extracts_video_id_from_query_param() {
-        assert_eq!(
-            extract_video_id("https://www.youtube.com/watch?v=abc123"),
-            Some("abc123".to_string())
-        );
-    }
-
-    #[test]
-    fn extracts_video_id_with_extra_params() {
-        assert_eq!(
-            extract_video_id("https://www.youtube.com/watch?v=abc123&t=10s"),
-            Some("abc123".to_string())
-        );
-    }
-
-    #[test]
-    fn extracts_video_id_from_short_url() {
-        assert_eq!(
-            extract_video_id("https://youtu.be/abc123"),
-            Some("abc123".to_string())
-        );
-    }
-
-    #[test]
-    fn extracts_video_id_from_short_url_with_query() {
-        assert_eq!(
-            extract_video_id("https://youtu.be/abc123?t=10"),
-            Some("abc123".to_string())
-        );
-    }
-
-    #[test]
-    fn returns_none_for_unrecognized_url() {
-        assert_eq!(extract_video_id("https://example.com/video"), None);
     }
 }

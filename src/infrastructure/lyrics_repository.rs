@@ -54,16 +54,4 @@ impl<'a> LyricsRepository<'a> {
 
         Ok(lines)
     }
-
-    pub async fn delete_by_music_id(&self, music_id: &str) -> Result<()> {
-        sqlx::query("DELETE FROM lyrics_line WHERE music_id = ?")
-            .bind(music_id)
-            .execute(self.pool)
-            .await
-            .with_context(|| {
-                format!("falha ao remover as linhas de letra da música {}", music_id)
-            })?;
-
-        Ok(())
-    }
 }

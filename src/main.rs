@@ -1,5 +1,3 @@
-#![allow(dead_code)]
-
 mod application;
 mod domain;
 mod infrastructure;
@@ -54,7 +52,7 @@ async fn main() -> anyhow::Result<()> {
         Arc::clone(&whisper),
     ));
 
-    let player = Player::new(audio_engine, youtube, lyrics, whisper, pool);
+    let player = Player::new(audio_engine, youtube, lyrics, pool);
     let timeline = Timeline::new(Arc::clone(&player));
 
     presentation::ui::run_operator_ui(player, timeline, settings)?;
