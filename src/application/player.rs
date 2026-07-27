@@ -178,6 +178,20 @@ impl Player {
         self.audio_engine.seek(seconds)
     }
 
+    /// Move a reprodução em `delta` segundos relativos à posição atual.
+    pub async fn seek_relative(&self, delta: f64) -> Result<()> {
+        self.audio_engine.seek_relative(delta)
+    }
+
+    /// Remove do cache local as letras associadas à mídia da `youtube_url`.
+    pub async fn clear_lyrics_cache(&self, youtube_url: &str) -> Result<()> {
+        let music_id = extract_video_id(youtube_url).ok_or_else(|| {
+            anyhow::anyhow!("não foi possível extrair o video_id da URL: {youtube_url}")
+        })?;
+
+        self.lyrics_service.clear_cache(&music_id).await
+    }
+
     /// Garante que o áudio da mídia esteja disponível localmente no cache.
     ///
     /// Retorna o caminho do arquivo local. Se já existir, é um *cache hit* e o
@@ -393,6 +407,16 @@ mod tests {
         player.play().await.expect("play");
 
         assert_eq!(player.state.read().await.status, PlaybackState::Playing);
+    }
+
+    #[tokio::test]
+    async fn seek_relative_returns_error_without_media() {
+        let pool = memory_pool().await;
+        let Some(player) = build_player(pool) else {
+            return;
+        };
+
+        assert!(player.seek_relative(10.0).await.is_err());
     }
 
     #[tokio::test]

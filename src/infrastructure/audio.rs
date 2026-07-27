@@ -55,6 +55,13 @@ impl AudioEngine {
             .map_err(|e| anyhow::anyhow!("{e:?}"))
     }
 
+    /// Move a reprodução em `delta_seconds` relativos à posição atual.
+    pub fn seek_relative(&self, delta_seconds: f64) -> Result<()> {
+        self.mpv
+            .command("seek", &[&delta_seconds.to_string(), "relative"])
+            .map_err(|e| anyhow::anyhow!("{e:?}"))
+    }
+
     /// Posição atual em segundos. Retorna 0.0 quando ainda não disponível.
     pub fn position(&self) -> f64 {
         self.mpv.get_property("time-pos").unwrap_or(0.0)

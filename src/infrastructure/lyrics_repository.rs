@@ -54,4 +54,91 @@ impl<'a> LyricsRepository<'a> {
 
         Ok(lines)
     }
+
+    pub async fn delete_by_music_id(&self, music_id: &str) -> Result<()> {
+        sqlx::query("DELETE FROM lyrics_line WHERE music_id = ?")
+            .bind(music_id)
+            .execute(self.pool)
+            .await
+            .with_context(|| {
+                format!("falha ao remover as linhas de letra da música {}", music_id)
+            })?;
+
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    async fn memory_pool() -> SqlitePool {
+        let pool = SqlitePool::connect("sqlite::memory:")
+            .await
+            .expect("pool em memória");
+        sqlx::migrate!("./migrations")
+            .run(&pool)
+            .await
+            .expect("migrações");
+        pool
+    }
+
+    fn line(music_id: &str, start_time: f64) -> LyricsLine {
+        LyricsLine {
+            id: 0,
+            music_id: music_id.to_string(),
+            start_time,
+            end_time: start_time + 1.0,
+            text: format!("linha {start_time}"),
+        }
+    }
+
+    async fn insert_music(pool: &SqlitePool, id: &str) {
+        sqlx::query("INSERT INTO music (id, title, youtube_url) VALUES (?, ?, ?)")
+            .bind(id)
+            .bind(format!("Título {id}"))
+            .bind(format!("https://youtu.be/{id}"))
+            .execute(pool)
+            .await
+            .expect("insert music");
+    }
+
+    #[tokio::test]
+    async fn delete_by_music_id_removes_all_lines_for_music() {
+        let pool = memory_pool().await;
+        insert_music(&pool, "m1").await;
+        insert_music(&pool, "m2").await;
+        let repository = LyricsRepository::new(&pool);
+
+        repository
+            .save_all(&[line("m1", 0.0), line("m1", 1.0), line("m2", 0.0)])
+            .await
+            .expect("save_all");
+
+        repository.delete_by_music_id("m1").await.expect("delete m1");
+
+        assert!(
+            repository
+                .find_by_music_id("m1")
+                .await
+                .expect("find m1")
+                .is_empty()
+        );
+        assert_eq!(
+            repository
+                .find_by_music_id("m2")
+                .await
+                .expect("find m2")
+                .len(),
+            1
+        );
+    }
+
+    #[tokio::test]
+    async fn delete_by_music_id_is_idempotent() {
+        let pool = memory_pool().await;
+        let repository = LyricsRepository::new(&pool);
+
+        assert!(repository.delete_by_music_id("inexistente").await.is_ok());
+    }
 }

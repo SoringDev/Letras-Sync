@@ -149,6 +149,29 @@ pub struct AppController {
         });
     }),
 
+    seek_relative: qt_method!(fn seek_relative(&self, delta: f64) {
+        let Some(player) = self.player.clone() else {
+            return;
+        };
+        tokio::spawn(async move {
+            if let Err(err) = player.seek_relative(delta).await {
+                tracing::error!("falha ao reposicionar a reprodução: {err:?}");
+            }
+        });
+    }),
+
+    clear_lyrics: qt_method!(fn clear_lyrics(&self, url: QString) {
+        let Some(player) = self.player.clone() else {
+            return;
+        };
+        let url = url.to_string();
+        tokio::spawn(async move {
+            if let Err(err) = player.clear_lyrics_cache(&url).await {
+                tracing::error!("falha ao limpar o cache de letras {url}: {err:?}");
+            }
+        });
+    }),
+
     toggle_projection: qt_method!(fn toggle_projection(&mut self) {
         self.projection_visible = !self.projection_visible;
         self.projection_visible_changed();

@@ -106,6 +106,11 @@ impl LyricsService {
         Ok(Vec::new())
     }
 
+    pub async fn clear_cache(&self, music_id: &str) -> Result<()> {
+        let repository = LyricsRepository::new(&self.pool);
+        repository.delete_by_music_id(music_id).await
+    }
+
     async fn persist(&self, repository: &LyricsRepository<'_>, lines: &[LyricsLine]) {
         if let Err(e) = repository.save_all(lines).await {
             tracing::warn!("falha ao persistir as letras: {e}");

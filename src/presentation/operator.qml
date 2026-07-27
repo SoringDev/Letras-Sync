@@ -115,6 +115,14 @@ ApplicationWindow {
                         onClicked: appController.load_music(modelData.youtube_url)
                     }
 
+                    Button {
+                        text: "✕"
+                        onClicked: {
+                            appController.clear_lyrics(modelData.youtube_url)
+                            appController.load_music(modelData.youtube_url)
+                        }
+                    }
+
                     ColumnLayout {
                         Layout.fillWidth: true
                         spacing: 0
@@ -159,6 +167,18 @@ ApplicationWindow {
                 text: "Stop"
                 enabled: operatorWindow.hasMusic
                 onClicked: appController.stop()
+            }
+
+            Button {
+                text: "−10s"
+                enabled: operatorWindow.hasMusic
+                onClicked: appController.seek_relative(-10.0)
+            }
+
+            Button {
+                text: "+10s"
+                enabled: operatorWindow.hasMusic
+                onClicked: appController.seek_relative(10.0)
             }
 
             Button {
