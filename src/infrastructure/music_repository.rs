@@ -43,15 +43,32 @@ impl<'a> MusicRepository<'a> {
         Ok(music)
     }
 
-    pub async fn list_all(&self) -> Result<Vec<Music>> {
-        let music = sqlx::query_as::<_, Music>(
-            "SELECT m.*, \
-             EXISTS(SELECT 1 FROM lyrics_line l WHERE l.music_id = m.id) AS has_lyrics \
-             FROM music m ORDER BY m.created_at DESC",
-        )
-        .fetch_all(self.pool)
-        .await
-        .context("falha ao listar as músicas")?;
+    pub async fn list_all(&self, search_query: Option<&str>) -> Result<Vec<Music>> {
+        let music = if let Some(search_query) = search_query.map(str::trim).filter(|q| !q.is_empty())
+        {
+            let pattern = format!("%{search_query}%");
+            sqlx::query_as::<_, Music>(
+                "SELECT m.*, \
+                 EXISTS(SELECT 1 FROM lyrics_line l WHERE l.music_id = m.id) AS has_lyrics \
+                 FROM music m \
+                 WHERE m.title LIKE ? OR m.artist LIKE ? \
+                 ORDER BY m.created_at DESC",
+            )
+            .bind(&pattern)
+            .bind(&pattern)
+            .fetch_all(self.pool)
+            .await
+            .context("falha ao listar as músicas")?
+        } else {
+            sqlx::query_as::<_, Music>(
+                "SELECT m.*, \
+                 EXISTS(SELECT 1 FROM lyrics_line l WHERE l.music_id = m.id) AS has_lyrics \
+                 FROM music m ORDER BY m.created_at DESC",
+            )
+            .fetch_all(self.pool)
+            .await
+            .context("falha ao listar as músicas")?
+        };
 
         Ok(music)
     }
@@ -102,7 +119,7 @@ mod tests {
         let pool = memory_pool().await;
         let repository = MusicRepository::new(&pool);
 
-        assert!(repository.list_all().await.expect("list_all").is_empty());
+        assert!(repository.list_all(None).await.expect("list_all").is_empty());
     }
 
     #[tokio::test]
@@ -115,7 +132,7 @@ mod tests {
             .await
             .expect("save");
 
-        let all = repository.list_all().await.expect("list_all");
+        let all = repository.list_all(None).await.expect("list_all");
 
         assert_eq!(all.len(), 1);
         assert_eq!(all[0].id, "abc");
@@ -138,7 +155,7 @@ mod tests {
             .await
             .expect("save newer");
 
-        let all = repository.list_all().await.expect("list_all");
+        let all = repository.list_all(None).await.expect("list_all");
 
         assert_eq!(all.len(), 2);
         assert_eq!(all[0].id, "newer");
@@ -173,11 +190,52 @@ mod tests {
             .await
             .expect("save lyrics");
 
-        let all = repository.list_all().await.expect("list_all");
+        let all = repository.list_all(None).await.expect("list_all");
         let com = all.iter().find(|m| m.id == "com_letra").expect("com_letra");
         let sem = all.iter().find(|m| m.id == "sem_letra").expect("sem_letra");
 
         assert_eq!(com.has_lyrics, Some(true));
         assert_eq!(sem.has_lyrics, Some(false));
+    }
+
+    #[tokio::test]
+    async fn list_all_filters_by_title_or_artist() {
+        let pool = memory_pool().await;
+        let repository = MusicRepository::new(&pool);
+
+        repository
+            .save(&Music {
+                id: "match".to_string(),
+                title: "Título sem relação".to_string(),
+                artist: Some("Artista termo".to_string()),
+                youtube_url: "https://youtu.be/match".to_string(),
+                duration: Some(180),
+                thumbnail: None,
+                created_at: Some("2024-01-01 00:00:00".to_string()),
+                has_lyrics: None,
+            })
+            .await
+            .expect("save match");
+        repository
+            .save(&Music {
+                id: "other".to_string(),
+                title: "Outro título".to_string(),
+                artist: Some("Outro artista".to_string()),
+                youtube_url: "https://youtu.be/other".to_string(),
+                duration: Some(180),
+                thumbnail: None,
+                created_at: Some("2024-02-01 00:00:00".to_string()),
+                has_lyrics: None,
+            })
+            .await
+            .expect("save other");
+
+        let filtered = repository
+            .list_all(Some("termo"))
+            .await
+            .expect("list_all");
+
+        assert_eq!(filtered.len(), 1);
+        assert_eq!(filtered[0].id, "match");
     }
 }

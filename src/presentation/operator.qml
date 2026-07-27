@@ -60,6 +60,18 @@ ApplicationWindow {
         onActivated: appController.stop()
     }
 
+    Shortcut {
+        sequence: "Ctrl+="
+        context: Qt.WindowShortcut
+        onActivated: appController.set_font_size(appController.font_size + 2)
+    }
+
+    Shortcut {
+        sequence: "Ctrl+-"
+        context: Qt.WindowShortcut
+        onActivated: appController.set_font_size(Math.max(appController.font_size - 2, 12))
+    }
+
     // Janela de projeção controlada pelo mesmo appController.
     Loader {
         source: "qrc:/letras_sync/presentation/projection.qml"
@@ -225,6 +237,12 @@ ApplicationWindow {
                 ColumnLayout {
                     Layout.fillWidth: true
                     spacing: 4
+
+                    TextField {
+                        Layout.fillWidth: true
+                        placeholderText: "Filtrar histórico por título ou artista..."
+                        onTextChanged: appController.set_history_search_query(text)
+                    }
 
                     Label {
                         text: "Histórico"

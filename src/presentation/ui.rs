@@ -103,6 +103,9 @@ pub struct AppController {
     history: qt_property!(QVariantList; NOTIFY history_changed),
     history_changed: qt_signal!(),
 
+    history_search_query: qt_property!(QString; NOTIFY history_search_query_changed),
+    history_search_query_changed: qt_signal!(),
+
     load_music: qt_method!(fn load_music(&mut self, url: QString) {
         self.load_url(url.to_string());
     }),
@@ -221,6 +224,12 @@ pub struct AppController {
     }),
 
     refresh_history: qt_method!(fn refresh_history(&self) {
+        self.spawn_history_refresh();
+    }),
+
+    set_history_search_query: qt_method!(fn set_history_search_query(&mut self, query: QString) {
+        self.history_search_query = query;
+        self.history_search_query_changed();
         self.spawn_history_refresh();
     }),
 
@@ -398,6 +407,7 @@ impl AppController {
         controller.projector_screen_index =
             settings.projector_monitor.map(|m| m as i32).unwrap_or(-1);
         controller.clear_screen = false;
+        controller.history_search_query = QString::default();
         controller.player = Some(player);
         controller.timeline = Some(timeline);
         controller.playlist_handle = Some(playlist);
@@ -546,6 +556,7 @@ impl AppController {
         let Some(pool) = self.pool.clone() else {
             return;
         };
+        let search_query = self.history_search_query.to_string();
         let qptr = QPointer::from(self);
 
         let apply = queued_callback(move |items: Vec<Music>| {
@@ -578,7 +589,12 @@ impl AppController {
 
         tokio::spawn(async move {
             let repository = MusicRepository::new(&pool);
-            match repository.list_all().await {
+            let query = search_query.trim().to_string();
+            match if query.is_empty() {
+                repository.list_all(None).await
+            } else {
+                repository.list_all(Some(query.as_str())).await
+            } {
                 Ok(items) => apply(items),
                 Err(err) => tracing::error!("falha ao atualizar o histórico: {err:?}"),
             }
