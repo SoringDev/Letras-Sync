@@ -179,6 +179,16 @@ ApplicationWindow {
 
                                 Label {
                                     Layout.fillWidth: true
+                                    text: modelData.has_lyrics
+                                        ? "[Letra Salva]"
+                                        : "[Pendente Whisper]"
+                                    font.pixelSize: 11
+                                    color: modelData.has_lyrics ? "#2E7D32" : "#888888"
+                                    elide: Text.ElideRight
+                                }
+
+                                Label {
+                                    Layout.fillWidth: true
                                     text: modelData.artist
                                     font.pixelSize: 12
                                     color: "#666666"
@@ -237,6 +247,32 @@ ApplicationWindow {
                     Button {
                         text: appController.projection_visible ? "Ocultar" : "Projetar"
                         onClicked: appController.toggle_projection()
+                    }
+                }
+
+                RowLayout {
+                    Layout.fillWidth: true
+                    spacing: 8
+
+                    Button {
+                        text: "Atrasar Letra (-0.5s)"
+                        enabled: operatorWindow.hasMusic
+                        onClicked: appController.adjust_sync_offset(-0.5)
+                    }
+
+                    Button {
+                        text: "Adiantar Letra (+0.5s)"
+                        enabled: operatorWindow.hasMusic
+                        onClicked: appController.adjust_sync_offset(0.5)
+                    }
+
+                    Label {
+                        Layout.fillWidth: true
+                        text: "Ajuste de Sincronismo: "
+                            + (appController.sync_offset >= 0 ? "+" : "")
+                            + appController.sync_offset.toFixed(1) + "s"
+                        horizontalAlignment: Text.AlignRight
+                        elide: Text.ElideRight
                     }
                 }
 
@@ -315,6 +351,16 @@ ApplicationWindow {
                                 Layout.fillWidth: true
                                 text: modelData.title
                                 font.bold: true
+                                elide: Text.ElideRight
+                            }
+
+                            Label {
+                                Layout.fillWidth: true
+                                text: modelData.has_lyrics
+                                    ? "[Letra Salva]"
+                                    : "[Pendente Whisper]"
+                                font.pixelSize: 11
+                                color: modelData.has_lyrics ? "#2E7D32" : "#888888"
                                 elide: Text.ElideRight
                             }
 

@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
+#[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow, PartialEq)]
 pub struct Music {
     pub id: String,
     pub title: String,
@@ -9,4 +9,6 @@ pub struct Music {
     pub duration: Option<i64>,
     pub thumbnail: Option<String>,
     pub created_at: Option<String>,
+    #[sqlx(default)]
+    pub has_lyrics: Option<bool>,
 }

@@ -54,6 +54,9 @@ pub struct AppController {
     duration: qt_property!(f64; NOTIFY duration_changed),
     duration_changed: qt_signal!(),
 
+    sync_offset: qt_property!(f64; NOTIFY sync_offset_changed),
+    sync_offset_changed: qt_signal!(),
+
     music_title: qt_property!(QString; NOTIFY music_title_changed),
     music_title_changed: qt_signal!(),
 
@@ -264,6 +267,19 @@ pub struct AppController {
         });
     }),
 
+    adjust_sync_offset: qt_method!(fn adjust_sync_offset(&mut self, delta: f64) {
+        self.sync_offset += delta;
+        self.sync_offset_changed();
+
+        if let Some(timeline) = self.timeline.clone() {
+            let offset = self.sync_offset;
+            tokio::spawn(async move {
+                timeline.set_offset(offset).await;
+                let _ = timeline.get_offset().await;
+            });
+        }
+    }),
+
     clear_lyrics: qt_method!(fn clear_lyrics(&self, url: QString) {
         let Some(player) = self.player.clone() else {
             return;
@@ -335,6 +351,7 @@ impl AppController {
     ) -> Self {
         let mut controller = AppController::default();
         controller.playback_state = QString::from(playback_state_label(PlaybackState::Idle));
+        controller.sync_offset = 0.0;
         controller.font_size = settings.font_size;
         controller.font_family = QString::from(settings.font_family.as_str());
         controller.font_color = QString::from(settings.font_color.as_str());
@@ -362,9 +379,17 @@ impl AppController {
     /// `Player` em uma tarefa de segundo plano, propagando eventuais falhas ao
     /// QML pelo mesmo padrão `QPointer` + `queued_callback`.
     fn load_url(&mut self, url: String) {
+        self.sync_offset = 0.0;
+        self.sync_offset_changed();
+
         let Some(player) = self.player.clone() else {
             return;
         };
+        if let Some(timeline) = self.timeline.clone() {
+            tokio::spawn(async move {
+                timeline.set_offset(0.0).await;
+            });
+        }
         self.error_message = QString::default();
         self.error_message_changed();
         self.loading_status = QString::default();
@@ -409,6 +434,9 @@ impl AppController {
         let Some(playlist) = self.playlist_handle.clone() else {
             return;
         };
+        let Some(pool) = self.pool.clone() else {
+            return;
+        };
         let qptr = QPointer::from(self);
 
         let apply = queued_callback(move |items: Vec<Music>| {
@@ -429,6 +457,10 @@ impl AppController {
                     "youtube_url".into(),
                     QString::from(music.youtube_url.as_str()).into(),
                 );
+                map.insert(
+                    "has_lyrics".into(),
+                    music.has_lyrics.unwrap_or(false).into(),
+                );
                 list.push(map.into());
             }
             this.playlist = list;
@@ -436,7 +468,22 @@ impl AppController {
         });
 
         tokio::spawn(async move {
-            let items = playlist.get_items().await;
+            let repository = MusicRepository::new(&pool);
+            let mut items = playlist.get_items().await;
+
+            for music in &mut items {
+                match repository.has_lyrics(&music.id).await {
+                    Ok(has_lyrics) => music.has_lyrics = Some(has_lyrics),
+                    Err(err) => {
+                        tracing::error!(
+                            "falha ao atualizar o status de letras da música {}: {err:?}",
+                            music.id
+                        );
+                        music.has_lyrics = Some(false);
+                    }
+                }
+            }
+
             apply(items);
         });
     }
@@ -468,6 +515,10 @@ impl AppController {
                 map.insert(
                     "youtube_url".into(),
                     QString::from(music.youtube_url.as_str()).into(),
+                );
+                map.insert(
+                    "has_lyrics".into(),
+                    music.has_lyrics.unwrap_or(false).into(),
                 );
                 list.push(map.into());
             }

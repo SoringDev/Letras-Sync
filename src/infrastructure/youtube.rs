@@ -48,6 +48,7 @@ impl YoutubeService {
             duration: meta.duration.map(|d| d as i64),
             thumbnail: meta.thumbnail,
             created_at: None,
+            has_lyrics: None,
         })
     }
 

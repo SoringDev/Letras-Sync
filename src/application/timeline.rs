@@ -22,6 +22,8 @@ pub enum TimelineEvent {
 struct TimelineState {
     lyrics: Vec<LyricsLine>,
     active_line: Option<LyricsLine>,
+    position: f64,
+    offset: f64,
 }
 
 /// Correlaciona o tempo de execução do player com as linhas de letra
@@ -82,6 +84,7 @@ impl Timeline {
                 let mut state = self.state.write().await;
                 state.lyrics = lyrics;
                 state.active_line = None;
+                state.position = 0.0;
                 drop(state);
                 self.emit(TimelineEvent::LineChanged(None));
             }
@@ -90,6 +93,7 @@ impl Timeline {
                 let mut state = self.state.write().await;
                 state.lyrics = Vec::new();
                 state.active_line = None;
+                state.position = 0.0;
                 drop(state);
                 self.emit(TimelineEvent::LineChanged(None));
             }
@@ -100,11 +104,35 @@ impl Timeline {
         }
     }
 
+    /// Ajusta o offset aplicado ao tempo atual da música.
+    pub async fn set_offset(&self, offset: f64) {
+        let mut state = self.state.write().await;
+        state.offset = offset;
+
+        let adjusted_position = state.position + state.offset;
+        let next = find_active_line(&state.lyrics, adjusted_position).cloned();
+
+        if same_line(&state.active_line, &next) {
+            return;
+        }
+
+        state.active_line = next.clone();
+        drop(state);
+        self.emit(TimelineEvent::LineChanged(next));
+    }
+
+    /// Retorna o offset atual aplicado à timeline.
+    pub async fn get_offset(&self) -> f64 {
+        self.state.read().await.offset
+    }
+
     /// Recalcula a linha ativa para a posição informada e, havendo mudança
     /// real, atualiza o estado e emite `LineChanged`.
     async fn update_active_line(&self, position: f64) {
         let mut state = self.state.write().await;
-        let next = find_active_line(&state.lyrics, position).cloned();
+        state.position = position;
+        let adjusted_position = state.position + state.offset;
+        let next = find_active_line(&state.lyrics, adjusted_position).cloned();
 
         if same_line(&state.active_line, &next) {
             return;
@@ -214,6 +242,14 @@ mod tests {
         // Avança para a linha 3 e depois retrocede (seek) para a linha 1.
         assert_eq!(find_active_line(&lines, 6.0).map(|l| l.id), Some(3));
         assert_eq!(find_active_line(&lines, 1.0).map(|l| l.id), Some(1));
+    }
+
+    #[test]
+    fn find_active_line_handles_positive_offset_earlier() {
+        let lines = vec![line(1, 1.0, 2.0), line(2, 2.0, 3.0)];
+
+        assert!(find_active_line(&lines, 0.5).is_none());
+        assert_eq!(find_active_line(&lines, 0.5 + 1.0).map(|l| l.id), Some(1));
     }
 
     #[test]

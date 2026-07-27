@@ -44,12 +44,28 @@ impl<'a> MusicRepository<'a> {
     }
 
     pub async fn list_all(&self) -> Result<Vec<Music>> {
-        let music = sqlx::query_as::<_, Music>("SELECT * FROM music ORDER BY created_at DESC")
-            .fetch_all(self.pool)
-            .await
-            .context("falha ao listar as músicas")?;
+        let music = sqlx::query_as::<_, Music>(
+            "SELECT m.*, \
+             EXISTS(SELECT 1 FROM lyrics_line l WHERE l.music_id = m.id) AS has_lyrics \
+             FROM music m ORDER BY m.created_at DESC",
+        )
+        .fetch_all(self.pool)
+        .await
+        .context("falha ao listar as músicas")?;
 
         Ok(music)
+    }
+
+    /// Indica se a música possui linhas de letra persistidas localmente.
+    pub async fn has_lyrics(&self, music_id: &str) -> Result<bool> {
+        let exists: bool =
+            sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM lyrics_line WHERE music_id = ?)")
+                .bind(music_id)
+                .fetch_one(self.pool)
+                .await
+                .with_context(|| format!("falha ao verificar letras da música {}", music_id))?;
+
+        Ok(exists)
     }
 }
 
@@ -77,6 +93,7 @@ mod tests {
             duration: Some(180),
             thumbnail: None,
             created_at: Some(created_at.to_string()),
+            has_lyrics: None,
         }
     }
 
@@ -126,5 +143,41 @@ mod tests {
         assert_eq!(all.len(), 2);
         assert_eq!(all[0].id, "newer");
         assert_eq!(all[1].id, "older");
+    }
+
+    #[tokio::test]
+    async fn list_all_reports_has_lyrics_status() {
+        use crate::domain::lyrics::LyricsLine;
+        use crate::infrastructure::lyrics_repository::LyricsRepository;
+
+        let pool = memory_pool().await;
+        let repository = MusicRepository::new(&pool);
+
+        repository
+            .save(&sample("com_letra", "2024-01-01 00:00:00"))
+            .await
+            .expect("save com_letra");
+        repository
+            .save(&sample("sem_letra", "2024-02-01 00:00:00"))
+            .await
+            .expect("save sem_letra");
+
+        LyricsRepository::new(&pool)
+            .save_all(&[LyricsLine {
+                id: 0,
+                music_id: "com_letra".to_string(),
+                start_time: 0.0,
+                end_time: 1.0,
+                text: "olá".to_string(),
+            }])
+            .await
+            .expect("save lyrics");
+
+        let all = repository.list_all().await.expect("list_all");
+        let com = all.iter().find(|m| m.id == "com_letra").expect("com_letra");
+        let sem = all.iter().find(|m| m.id == "sem_letra").expect("sem_letra");
+
+        assert_eq!(com.has_lyrics, Some(true));
+        assert_eq!(sem.has_lyrics, Some(false));
     }
 }
