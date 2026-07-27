@@ -476,4 +476,14 @@ mod tests {
 
         let _ = tokio::fs::remove_file(&local_path).await;
     }
+
+    #[tokio::test]
+    async fn load_youtube_with_invalid_url_returns_error() {
+        let pool = memory_pool().await;
+        let Some(player) = build_player(pool) else {
+            return;
+        };
+
+        assert!(player.load_youtube("not-a-url").await.is_err());
+    }
 }

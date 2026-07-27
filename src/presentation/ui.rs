@@ -68,6 +68,9 @@ pub struct AppController {
     loading: qt_property!(bool; NOTIFY loading_changed),
     loading_changed: qt_signal!(),
 
+    error_message: qt_property!(QString; NOTIFY error_message_changed),
+    error_message_changed: qt_signal!(),
+
     font_size: qt_property!(u32; NOTIFY style_changed),
     font_family: qt_property!(QString; NOTIFY style_changed),
     font_color: qt_property!(QString; NOTIFY style_changed),
@@ -82,6 +85,8 @@ pub struct AppController {
         let Some(player) = self.player.clone() else {
             return;
         };
+        self.error_message = QString::default();
+        self.error_message_changed();
         self.loading = true;
         self.loading_changed();
 
@@ -92,11 +97,25 @@ pub struct AppController {
             }
         });
 
+        let qptr_err = QPointer::from(&*self);
+        let show_error = queued_callback(move |msg: String| {
+            if let Some(pinned) = qptr_err.as_pinned() {
+                let mut this = pinned.borrow_mut();
+                this.error_message = QString::from(msg.as_str());
+                this.error_message_changed();
+                this.loading = false;
+                this.loading_changed();
+            }
+        });
+
         let url = url.to_string();
         tokio::spawn(async move {
             match player.load_youtube(&url).await {
                 Ok(()) => refresh(()),
-                Err(err) => tracing::error!("falha ao carregar a música {url}: {err:?}"),
+                Err(err) => {
+                    tracing::error!("falha ao carregar a música {url}: {err:?}");
+                    show_error(format!("Erro ao carregar: {err}"));
+                }
             }
         });
     }),
