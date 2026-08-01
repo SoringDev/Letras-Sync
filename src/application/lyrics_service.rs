@@ -12,7 +12,7 @@ use crate::infrastructure::providers::{
 };
 use crate::infrastructure::whisper::WhisperService;
 use crate::infrastructure::youtube::YoutubeService;
-use crate::shared::utils::extract_video_id;
+use crate::shared::utils::{extract_song_title_candidates, extract_video_id};
 
 use sqlx::sqlite::SqlitePool;
 
@@ -84,42 +84,38 @@ impl LyricsService {
             tracing::warn!("não foi possível extrair o video_id da URL: {youtube_url}");
         }
 
-        // 3. LouvorJA (busca pública de letras sincronizadas).
-        let louvorja_query = match MusicRepository::new(&self.pool)
+        // 3. LouvorJA + 4. NetEase — tenta cada candidato de título extraído do YouTube
+        let raw_title = match MusicRepository::new(&self.pool)
             .find_by_youtube_url(youtube_url)
             .await
         {
             Ok(Some(music)) if !music.title.trim().is_empty() => music.title,
             Ok(_) => music_id.to_string(),
             Err(e) => {
-                tracing::warn!("falha ao consultar a música para buscar no LouvorJA: {e}");
+                tracing::warn!("falha ao consultar a música para buscar nos providers: {e}");
                 music_id.to_string()
             }
         };
 
-        match self
-            .louvorja
-            .fetch_synced_lyrics(&louvorja_query, music_id)
-            .await
-        {
-            Ok(Some(lines)) if !lines.is_empty() => {
-                return Ok(self.persist_and_reload(&repository, music_id, &lines).await);
-            }
-            Ok(_) => {}
-            Err(e) => tracing::warn!("falha ao consultar o LouvorJA: {e}"),
-        }
+        let title_candidates = extract_song_title_candidates(&raw_title);
+        tracing::info!("candidatos de título para busca: {:?}", title_candidates);
 
-        // 4. NetEase.
-        match self
-            .netease
-            .fetch_synced_lyrics(&louvorja_query, music_id)
-            .await
-        {
-            Ok(Some(lines)) if !lines.is_empty() => {
-                return Ok(self.persist_and_reload(&repository, music_id, &lines).await);
+        for candidate in &title_candidates {
+            match self.louvorja.fetch_synced_lyrics(candidate, music_id).await {
+                Ok(Some(lines)) if !lines.is_empty() => {
+                    return Ok(self.persist_and_reload(&repository, music_id, &lines).await);
+                }
+                Ok(_) => {}
+                Err(e) => tracing::warn!("falha ao consultar o LouvorJA com '{candidate}': {e}"),
             }
-            Ok(_) => {}
-            Err(e) => tracing::warn!("falha ao consultar o NetEase: {e}"),
+
+            match self.netease.fetch_synced_lyrics(candidate, music_id).await {
+                Ok(Some(lines)) if !lines.is_empty() => {
+                    return Ok(self.persist_and_reload(&repository, music_id, &lines).await);
+                }
+                Ok(_) => {}
+                Err(e) => tracing::warn!("falha ao consultar o NetEase com '{candidate}': {e}"),
+            }
         }
 
         // 5. LRCLib (o music_id é usado como termo de busca).
