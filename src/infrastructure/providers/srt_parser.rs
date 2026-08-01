@@ -118,7 +118,11 @@ fn parse_timestamp(ts: &str) -> Option<f64> {
 
     let components: Vec<&str> = time_part.split(':').collect();
     let (hours, minutes, seconds) = match components.as_slice() {
-        [h, m, s] => (h.parse::<f64>().ok()?, m.parse::<f64>().ok()?, s.parse::<f64>().ok()?),
+        [h, m, s] => (
+            h.parse::<f64>().ok()?,
+            m.parse::<f64>().ok()?,
+            s.parse::<f64>().ok()?,
+        ),
         [m, s] => (0.0, m.parse::<f64>().ok()?, s.parse::<f64>().ok()?),
         _ => return None,
     };

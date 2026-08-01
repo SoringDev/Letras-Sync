@@ -32,7 +32,10 @@ impl<'a> LyricsRepository<'a> {
             .execute(&mut *tx)
             .await
             .with_context(|| {
-                format!("falha ao salvar a linha de letra da música {}", line.music_id)
+                format!(
+                    "falha ao salvar a linha de letra da música {}",
+                    line.music_id
+                )
             })?;
         }
 
@@ -130,7 +133,10 @@ mod tests {
             .await
             .expect("save_all");
 
-        repository.delete_by_music_id("m1").await.expect("delete m1");
+        repository
+            .delete_by_music_id("m1")
+            .await
+            .expect("delete m1");
 
         assert!(
             repository
@@ -168,7 +174,10 @@ mod tests {
             .await
             .expect("save_all");
 
-        let before = repository.find_by_music_id("m1").await.expect("find before");
+        let before = repository
+            .find_by_music_id("m1")
+            .await
+            .expect("find before");
         let id = before[0].id;
 
         repository

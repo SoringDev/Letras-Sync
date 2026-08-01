@@ -7,7 +7,12 @@ pub fn format_lrc(lines: &[LyricsLine]) -> String {
     let mut output = String::new();
 
     for line in lines {
-        let _ = writeln!(output, "[{}]{}", format_lrc_time(line.start_time), line.text);
+        let _ = writeln!(
+            output,
+            "[{}]{}",
+            format_lrc_time(line.start_time),
+            line.text
+        );
     }
 
     output
@@ -85,7 +90,10 @@ mod tests {
 
     #[test]
     fn formats_srt_with_sequential_numbers_and_timestamp_precision() {
-        let lines = vec![line(1.234, 2.5, "Primeira"), line(3661.999, 3664.25, "Segunda")];
+        let lines = vec![
+            line(1.234, 2.5, "Primeira"),
+            line(3661.999, 3664.25, "Segunda"),
+        ];
 
         assert_eq!(
             format_srt(&lines),

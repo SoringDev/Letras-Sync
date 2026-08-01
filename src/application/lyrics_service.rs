@@ -7,7 +7,9 @@ use serde::Deserialize;
 use crate::domain::lyrics::LyricsLine;
 use crate::infrastructure::lyrics_repository::LyricsRepository;
 use crate::infrastructure::music_repository::MusicRepository;
-use crate::infrastructure::providers::{lrc_parser, louvorja::LouvorJaProvider, srt_parser, vtt_parser};
+use crate::infrastructure::providers::{
+    louvorja::LouvorJaProvider, lrc_parser, srt_parser, vtt_parser,
+};
 use crate::infrastructure::whisper::WhisperService;
 use crate::infrastructure::youtube::YoutubeService;
 use crate::shared::utils::extract_video_id;
@@ -70,9 +72,7 @@ impl LyricsService {
                         srt_parser::parse(&vtt_content, music_id)
                     };
                     if !lines.is_empty() {
-                        return Ok(self
-                            .persist_and_reload(&repository, music_id, &lines)
-                            .await);
+                        return Ok(self.persist_and_reload(&repository, music_id, &lines).await);
                     }
                 }
                 Ok(None) => {}
@@ -101,9 +101,7 @@ impl LyricsService {
             .await
         {
             Ok(Some(lines)) if !lines.is_empty() => {
-                return Ok(self
-                    .persist_and_reload(&repository, music_id, &lines)
-                    .await);
+                return Ok(self.persist_and_reload(&repository, music_id, &lines).await);
             }
             Ok(_) => {}
             Err(e) => tracing::warn!("falha ao consultar o LouvorJA: {e}"),
@@ -114,9 +112,7 @@ impl LyricsService {
             Ok(Some(lrc_content)) => {
                 let lines = lrc_parser::parse(&lrc_content, music_id);
                 if !lines.is_empty() {
-                    return Ok(self
-                        .persist_and_reload(&repository, music_id, &lines)
-                        .await);
+                    return Ok(self.persist_and_reload(&repository, music_id, &lines).await);
                 }
             }
             Ok(None) => {}
@@ -128,9 +124,7 @@ impl LyricsService {
             on_status("Gerando sincronização de letras via IA Whisper (isso pode demorar)...");
             match self.whisper.transcribe(path, music_id).await {
                 Ok(lines) if !lines.is_empty() => {
-                    return Ok(self
-                        .persist_and_reload(&repository, music_id, &lines)
-                        .await);
+                    return Ok(self.persist_and_reload(&repository, music_id, &lines).await);
                 }
                 Ok(_) => {}
                 Err(e) => tracing::warn!("falha na transcrição do Whisper: {e}"),

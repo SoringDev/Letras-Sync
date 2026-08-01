@@ -44,7 +44,8 @@ async fn main() -> anyhow::Result<()> {
     tracing::info!("Banco de dados conectado e migrações aplicadas com sucesso.");
     let pool = database.pool().clone();
 
-    let audio_engine = Arc::new(AudioEngine::new().context("falha ao inicializar o motor de áudio")?);
+    let audio_engine =
+        Arc::new(AudioEngine::new().context("falha ao inicializar o motor de áudio")?);
     let youtube = Arc::new(YoutubeService::new());
     let whisper = Arc::new(WhisperService::new());
     let lyrics = Arc::new(LyricsService::new(

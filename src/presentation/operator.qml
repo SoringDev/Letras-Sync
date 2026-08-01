@@ -37,6 +37,11 @@ ApplicationWindow {
         appController.update_lyric_line(appController.active_line_id, lyricDraft)
     }
 
+    function loadMusic() {
+        if (urlField.text.length > 0)
+            appController.load_music(urlField.text)
+    }
+
     function exportFormatFromFilter(filterName) {
         return filterName.indexOf("SRT") >= 0 ? "srt" : "lrc"
     }
@@ -171,12 +176,13 @@ ApplicationWindow {
                         Layout.fillWidth: true
                         placeholderText: "Cole a URL do YouTube ou caminho local"
                         selectByMouse: true
+                        onAccepted: operatorWindow.loadMusic()
                     }
 
                     Button {
                         text: "Carregar"
                         enabled: urlField.text.length > 0 && !appController.loading
-                        onClicked: appController.load_music(urlField.text)
+                        onClicked: operatorWindow.loadMusic()
                     }
 
                     Button {
@@ -383,6 +389,32 @@ ApplicationWindow {
                                     : "Nenhuma música ativa"
                                 horizontalAlignment: Text.AlignRight
                                 elide: Text.ElideRight
+                            }
+                        }
+
+                        RowLayout {
+                            Layout.fillWidth: true
+                            spacing: 8
+
+                            Button {
+                                text: "Limpar Banco (Dev)"
+                                enabled: !appController.loading
+                                onClicked: appController.clear_database()
+                                contentItem: Text {
+                                    text: "Limpar Banco (Dev)"
+                                    color: "#B71C1C"
+                                    horizontalAlignment: Text.AlignHCenter
+                                    verticalAlignment: Text.AlignVCenter
+                                    font: parent.font
+                                }
+                                background: Rectangle {
+                                    implicitWidth: 160
+                                    implicitHeight: 36
+                                    radius: 6
+                                    color: "#FFF1F1"
+                                    border.color: "#D32F2F"
+                                    border.width: 1
+                                }
                             }
                         }
                     }

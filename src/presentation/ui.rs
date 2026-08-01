@@ -404,6 +404,46 @@ pub struct AppController {
         }
     ),
 
+    clear_database: qt_method!(
+        fn clear_database(&mut self) {
+            let Some(pool) = self.pool.clone() else {
+                self.error_message = QString::from("Erro: banco de dados indisponível");
+                self.error_message_changed();
+                return;
+            };
+
+            let qptr = QPointer::from(&*self);
+            let refresh = queued_callback(move |()| {
+                if let Some(pinned) = qptr.as_pinned() {
+                    let mut this = pinned.borrow_mut();
+                    this.spawn_history_refresh();
+                    this.error_message = QString::from("OK: Banco limpo");
+                    this.error_message_changed();
+                }
+            });
+
+            let qptr_err = QPointer::from(&*self);
+            let show_error = queued_callback(move |msg: String| {
+                if let Some(pinned) = qptr_err.as_pinned() {
+                    let mut this = pinned.borrow_mut();
+                    this.error_message = QString::from(msg.as_str());
+                    this.error_message_changed();
+                }
+            });
+
+            tokio::spawn(async move {
+                let repository = MusicRepository::new(&pool);
+                match repository.clear_all_data().await {
+                    Ok(()) => refresh(()),
+                    Err(err) => {
+                        tracing::error!("falha ao limpar o banco de dados: {err:?}");
+                        show_error(format!("Erro: falha ao limpar o banco: {err}"));
+                    }
+                }
+            });
+        }
+    ),
+
     export_lyrics: qt_method!(
         fn export_lyrics(&self, music_id: QString, file_path: QString, format: QString) -> bool {
             let music_id = music_id.to_string();
@@ -1073,10 +1113,7 @@ mod tests {
             trim_lyric_line_text("Linha final!!!   "),
             "Linha final".to_string()
         );
-        assert_eq!(
-            trim_lyric_line_text("Verso 2...??"),
-            "Verso 2".to_string()
-        );
+        assert_eq!(trim_lyric_line_text("Verso 2...??"), "Verso 2".to_string());
     }
 }
 

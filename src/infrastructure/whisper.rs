@@ -66,11 +66,7 @@ impl WhisperService {
     /// Escreve um script Python temporário, executa-o de forma assíncrona para
     /// gerar um WebVTT, faz o parse do resultado e remove os arquivos
     /// temporários (tanto em sucesso quanto em erro).
-    pub async fn transcribe(
-        &self,
-        audio_path: &Path,
-        music_id: &str,
-    ) -> Result<Vec<LyricsLine>> {
+    pub async fn transcribe(&self, audio_path: &Path, music_id: &str) -> Result<Vec<LyricsLine>> {
         let (script_path, vtt_path) = self.temp_paths();
 
         let result = self
@@ -122,14 +118,12 @@ impl WhisperService {
             ));
         }
 
-        let vtt_content = tokio::fs::read_to_string(vtt_path)
-            .await
-            .with_context(|| {
-                format!(
-                    "falha ao ler o WebVTT gerado pelo Whisper em {}",
-                    vtt_path.display()
-                )
-            })?;
+        let vtt_content = tokio::fs::read_to_string(vtt_path).await.with_context(|| {
+            format!(
+                "falha ao ler o WebVTT gerado pelo Whisper em {}",
+                vtt_path.display()
+            )
+        })?;
 
         Ok(vtt_parser::parse(&vtt_content, music_id))
     }

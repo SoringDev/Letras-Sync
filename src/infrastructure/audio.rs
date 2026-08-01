@@ -2,7 +2,7 @@ use std::ffi::{CStr, CString};
 use std::os::raw::{c_char, c_void};
 use std::ptr::NonNull;
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use libmpv_sys as mpv;
 
 /// Fachada fina sobre o libmpv que expõe controles básicos de reprodução de
@@ -102,7 +102,10 @@ impl AudioEngine {
     }
 
     fn initialize(&self) -> Result<()> {
-        check_mpv(unsafe { mpv::mpv_initialize(self.ctx()) }, "falha ao inicializar o libmpv")
+        check_mpv(
+            unsafe { mpv::mpv_initialize(self.ctx()) },
+            "falha ao inicializar o libmpv",
+        )
     }
 
     fn set_option_string(&self, name: &str, value: &str) -> Result<()> {

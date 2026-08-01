@@ -224,8 +224,8 @@ impl Player {
             return self.load_local_media(&local_path).await;
         }
 
-        let normalized = crate::shared::utils::normalize_youtube_url(input)
-            .unwrap_or_else(|| input.to_string());
+        let normalized =
+            crate::shared::utils::normalize_youtube_url(input).unwrap_or_else(|| input.to_string());
 
         self.load_remote_youtube(&normalized).await
     }

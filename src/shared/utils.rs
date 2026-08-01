@@ -116,7 +116,9 @@ mod tests {
     #[test]
     fn normalize_youtube_url_from_music_watch_url() {
         assert_eq!(
-            normalize_youtube_url("https://music.youtube.com/watch?v=kfRTPB1ukMc&si=LVBiIBUOCkvS64GM"),
+            normalize_youtube_url(
+                "https://music.youtube.com/watch?v=kfRTPB1ukMc&si=LVBiIBUOCkvS64GM"
+            ),
             Some("https://www.youtube.com/watch?v=kfRTPB1ukMc".to_string())
         );
     }

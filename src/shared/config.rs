@@ -55,9 +55,8 @@ pub fn load_settings() -> Result<Settings> {
             save_settings(&settings)?;
             Ok(settings)
         }
-        Err(err) => Err(err).with_context(|| {
-            format!("falha ao ler o arquivo de configuração {}", path.display())
-        }),
+        Err(err) => Err(err)
+            .with_context(|| format!("falha ao ler o arquivo de configuração {}", path.display())),
     }
 }
 
@@ -77,8 +76,12 @@ fn write_settings(path: &std::path::Path, settings: &Settings) -> Result<()> {
     let contents = toml::to_string_pretty(settings)
         .context("falha ao serializar as configurações para TOML")?;
 
-    fs::write(path, contents)
-        .with_context(|| format!("falha ao gravar o arquivo de configuração {}", path.display()))?;
+    fs::write(path, contents).with_context(|| {
+        format!(
+            "falha ao gravar o arquivo de configuração {}",
+            path.display()
+        )
+    })?;
 
     Ok(())
 }

@@ -100,6 +100,30 @@ impl<'a> MusicRepository<'a> {
 
         Ok(())
     }
+
+    pub async fn clear_all_data(&self) -> Result<()> {
+        let mut tx = self
+            .pool
+            .begin()
+            .await
+            .context("falha ao iniciar a transação para limpar o banco")?;
+
+        sqlx::query("DELETE FROM lyrics_line")
+            .execute(&mut *tx)
+            .await
+            .context("falha ao remover as letras do banco")?;
+
+        sqlx::query("DELETE FROM music")
+            .execute(&mut *tx)
+            .await
+            .context("falha ao remover as músicas do banco")?;
+
+        tx.commit()
+            .await
+            .context("falha ao confirmar a limpeza do banco")?;
+
+        Ok(())
+    }
 }
 
 #[cfg(test)]
@@ -284,5 +308,47 @@ mod tests {
         assert_eq!(stored.sync_offset, 1.5);
         assert_eq!(stored.title, music.title);
         assert_eq!(stored.artist, music.artist);
+    }
+
+    #[tokio::test]
+    async fn clear_all_data_removes_music_and_lyrics() {
+        use crate::domain::lyrics::LyricsLine;
+        use crate::infrastructure::lyrics_repository::LyricsRepository;
+
+        let pool = memory_pool().await;
+        let repository = MusicRepository::new(&pool);
+        let lyrics_repository = LyricsRepository::new(&pool);
+
+        repository
+            .save(&sample("m1", "2024-01-01 00:00:00"))
+            .await
+            .expect("save music");
+        lyrics_repository
+            .save_all(&[LyricsLine {
+                id: 0,
+                music_id: "m1".to_string(),
+                start_time: 0.0,
+                end_time: 1.0,
+                text: "linha".to_string(),
+            }])
+            .await
+            .expect("save lyrics");
+
+        repository.clear_all_data().await.expect("clear all data");
+
+        assert!(
+            repository
+                .list_all(None)
+                .await
+                .expect("list_all")
+                .is_empty()
+        );
+        assert!(
+            lyrics_repository
+                .find_by_music_id("m1")
+                .await
+                .expect("find lyrics")
+                .is_empty()
+        );
     }
 }

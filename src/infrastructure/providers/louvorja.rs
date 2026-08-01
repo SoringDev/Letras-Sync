@@ -68,7 +68,11 @@ impl LouvorJaProvider {
             .await
             .context("falha ao desserializar a busca do LouvorJA")?;
 
-        let Some(id_music) = search.data.into_iter().next().map(|item| item.id_music.into_string())
+        let Some(id_music) = search
+            .data
+            .into_iter()
+            .next()
+            .map(|item| item.id_music.into_string())
         else {
             return Ok(None);
         };
