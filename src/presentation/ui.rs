@@ -50,6 +50,11 @@ fn qml_path_to_pathbuf(file_path: &str) -> std::path::PathBuf {
     }
 }
 
+fn trim_lyric_line_text(text: &str) -> String {
+    text.trim_end_matches(|c: char| !c.is_alphanumeric())
+        .to_string()
+}
+
 /// Controlador central que faz a ponte entre o QML e os serviços do backend.
 ///
 /// Expõe propriedades reativas e métodos ao QML e escuta os canais de
@@ -592,7 +597,7 @@ pub struct AppController {
             let Some(player) = self.player.clone() else {
                 return;
             };
-            let new_text = new_text.to_string();
+            let new_text = trim_lyric_line_text(&new_text.to_string());
             tokio::spawn(async move {
                 if let Err(err) = player.update_lyrics_line(id, &new_text).await {
                     tracing::error!("falha ao atualizar a linha de letra {id}: {err:?}");
@@ -1060,6 +1065,18 @@ mod tests {
         assert!(!can_seek(120.0, -1.0));
         assert!(can_seek(120.0, 0.0));
         assert!(can_seek(120.0, 119.5));
+    }
+
+    #[test]
+    fn trim_lyric_line_text_removes_trailing_noise() {
+        assert_eq!(
+            trim_lyric_line_text("Linha final!!!   "),
+            "Linha final".to_string()
+        );
+        assert_eq!(
+            trim_lyric_line_text("Verso 2...??"),
+            "Verso 2".to_string()
+        );
     }
 }
 

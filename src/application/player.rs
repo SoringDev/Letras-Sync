@@ -224,7 +224,10 @@ impl Player {
             return self.load_local_media(&local_path).await;
         }
 
-        self.load_remote_youtube(input).await
+        let normalized = crate::shared::utils::normalize_youtube_url(input)
+            .unwrap_or_else(|| input.to_string());
+
+        self.load_remote_youtube(&normalized).await
     }
 
     async fn load_remote_youtube(&self, url: &str) -> Result<()> {
@@ -258,16 +261,17 @@ impl Player {
             });
 
         self.audio_engine.load(&local_path.to_string_lossy())?;
+        self.audio_engine.pause()?;
 
         {
             let mut state = self.state.write().await;
             state.current_music = Some(music.clone());
             state.current_lyrics = lyrics.clone();
-            state.status = PlaybackState::Playing;
+            state.status = PlaybackState::Paused;
         }
 
         self.emit(PlayerEvent::MusicLoaded { music, lyrics });
-        self.emit(PlayerEvent::StateChanged(PlaybackState::Playing));
+        self.emit(PlayerEvent::StateChanged(PlaybackState::Paused));
 
         Ok(())
     }
@@ -302,16 +306,17 @@ impl Player {
             });
 
         self.audio_engine.load(&canonical_path.to_string_lossy())?;
+        self.audio_engine.pause()?;
 
         {
             let mut state = self.state.write().await;
             state.current_music = Some(music.clone());
             state.current_lyrics = lyrics.clone();
-            state.status = PlaybackState::Playing;
+            state.status = PlaybackState::Paused;
         }
 
         self.emit(PlayerEvent::MusicLoaded { music, lyrics });
-        self.emit(PlayerEvent::StateChanged(PlaybackState::Playing));
+        self.emit(PlayerEvent::StateChanged(PlaybackState::Paused));
 
         Ok(())
     }

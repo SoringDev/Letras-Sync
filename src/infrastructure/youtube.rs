@@ -177,6 +177,7 @@ fn audio_download_args(url: &str, output_template: &Path) -> Vec<OsString> {
 
 fn yt_dlp_command() -> Command {
     let mut command = Command::new("yt-dlp");
+    command.args(["--extractor-args", "youtube:player_client=android"]);
 
     if node_runtime_available() {
         command.args(["--js-runtimes", "node"]);
