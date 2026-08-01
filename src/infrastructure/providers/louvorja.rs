@@ -1,23 +1,32 @@
+use std::path::Path;
 use std::time::Duration;
 
 use anyhow::{Context, Result};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 use crate::domain::lyrics::LyricsLine;
 
-#[derive(Debug, Deserialize)]
-struct SearchResponse {
-    data: Vec<SearchItem>,
+#[derive(Debug, Serialize, Deserialize, Clone)]
+struct CatalogEntry {
+    id: String,
+    name: String,
 }
 
 #[derive(Debug, Deserialize)]
-struct SearchItem {
-    id_music: IdMusic,
+struct CatalogPageResponse {
+    data: Vec<CatalogPageItem>,
+    last_page: Option<u32>,
+}
+
+#[derive(Debug, Deserialize)]
+struct CatalogPageItem {
+    id_music: CatalogIdMusic,
+    name: String,
 }
 
 #[derive(Debug, Deserialize)]
 #[serde(untagged)]
-enum IdMusic {
+enum CatalogIdMusic {
     String(String),
     Number(i64),
     Unsigned(u64),
@@ -45,6 +54,7 @@ impl LouvorJaProvider {
         &self,
         query: &str,
         music_id: &str,
+        cache_path: &Path,
     ) -> Result<Option<Vec<LyricsLine>>> {
         let query = query.trim();
         if query.is_empty() {
@@ -52,32 +62,23 @@ impl LouvorJaProvider {
         }
 
         let client = reqwest::Client::builder()
-            .timeout(Duration::from_secs(5))
+            .timeout(Duration::from_secs(10))
             .build()?;
 
-        let search_url = "https://api.louvorja.com.br/pt/musics";
-        let search: SearchResponse = client
-            .get(search_url)
-            .query(&[("q", query)])
-            .send()
-            .await
-            .context("falha ao consultar a busca do LouvorJA")?
-            .error_for_status()
-            .context("LouvorJA retornou erro na busca")?
-            .json()
-            .await
-            .context("falha ao desserializar a busca do LouvorJA")?;
+        let catalog = load_or_fetch_catalog(&client, cache_path).await?;
 
-        let Some(id_music) = search
-            .data
-            .into_iter()
-            .next()
-            .map(|item| item.id_music.into_string())
-        else {
+        let Some(entry) = find_best_match(&catalog, query) else {
+            tracing::info!("louvorja: nenhum match para '{query}' no catálogo");
             return Ok(None);
         };
 
-        let detail_url = format!("https://api.louvorja.com.br/pt/musics/{id_music}");
+        tracing::info!(
+            "louvorja: match encontrado '{}' (id: {})",
+            entry.name,
+            entry.id
+        );
+
+        let detail_url = format!("https://api.louvorja.com.br/pt/musics/{}", entry.id);
         let detail: MusicResponse = client
             .get(detail_url)
             .send()
@@ -100,6 +101,101 @@ impl LouvorJaProvider {
             Ok(Some(lines))
         }
     }
+}
+
+async fn load_or_fetch_catalog(
+    client: &reqwest::Client,
+    cache_path: &Path,
+) -> Result<Vec<CatalogEntry>> {
+    let catalog_file = cache_path.join("louvorja_catalog.json");
+
+    let needs_refresh = if catalog_file.exists() {
+        let metadata = tokio::fs::metadata(&catalog_file).await?;
+        let age = metadata.modified()?.elapsed().unwrap_or(Duration::MAX);
+        age > Duration::from_secs(60 * 60 * 24 * 7)
+    } else {
+        true
+    };
+
+    if !needs_refresh {
+        let content = tokio::fs::read_to_string(&catalog_file).await?;
+        let entries: Vec<CatalogEntry> = serde_json::from_str(&content)?;
+        tracing::info!(
+            "louvorja: catálogo local carregado ({} músicas)",
+            entries.len()
+        );
+        return Ok(entries);
+    }
+
+    tracing::info!("louvorja: baixando catálogo completo...");
+
+    let mut all_entries: Vec<CatalogEntry> = Vec::new();
+    let mut page = 1u32;
+
+    loop {
+        let page_value = page.to_string();
+        let response: CatalogPageResponse = client
+            .get("https://api.louvorja.com.br/pt/musics")
+            .query(&[("page", page_value.as_str())])
+            .send()
+            .await
+            .context("louvorja: falha ao baixar página do catálogo")?
+            .error_for_status()
+            .context("louvorja: erro ao baixar página do catálogo")?
+            .json()
+            .await
+            .context("louvorja: falha ao desserializar página do catálogo")?;
+
+        for item in response.data {
+            let id = item.id_music.into_string();
+            let name = item.name.trim().to_string();
+            if !name.is_empty() {
+                all_entries.push(CatalogEntry { id, name });
+            }
+        }
+
+        let last_page = response.last_page.unwrap_or(1);
+        if page >= last_page {
+            break;
+        }
+        page += 1;
+    }
+
+    tracing::info!(
+        "louvorja: catálogo baixado com {} músicas",
+        all_entries.len()
+    );
+
+    if !cache_path.as_os_str().is_empty() {
+        tokio::fs::create_dir_all(cache_path).await.ok();
+        let json = serde_json::to_string(&all_entries)?;
+        tokio::fs::write(&catalog_file, json).await.ok();
+    }
+
+    Ok(all_entries)
+}
+
+fn normalize(s: &str) -> String {
+    s.to_lowercase()
+        .replace(['á', 'à', 'ã', 'â'], "a")
+        .replace(['é', 'ê'], "e")
+        .replace(['í'], "i")
+        .replace(['ó', 'õ', 'ô'], "o")
+        .replace(['ú'], "u")
+        .replace(['ç'], "c")
+}
+
+fn find_best_match<'a>(catalog: &'a [CatalogEntry], query: &str) -> Option<&'a CatalogEntry> {
+    let q = normalize(query);
+
+    if let Some(entry) = catalog.iter().find(|entry| normalize(&entry.name) == q) {
+        return Some(entry);
+    }
+
+    catalog.iter().find(|entry| {
+        let n = normalize(&entry.name);
+        n.contains(&q) || q.contains(&n)
+    })
 }
 
 fn parse_time(time: &str) -> Option<f64> {
@@ -143,12 +239,12 @@ fn build_lines(music_id: &str, items: Vec<LyricItem>) -> Vec<LyricsLine> {
     lines
 }
 
-impl IdMusic {
+impl CatalogIdMusic {
     fn into_string(self) -> String {
         match self {
-            IdMusic::String(value) => value,
-            IdMusic::Number(value) => value.to_string(),
-            IdMusic::Unsigned(value) => value.to_string(),
+            CatalogIdMusic::String(value) => value,
+            CatalogIdMusic::Number(value) => value.to_string(),
+            CatalogIdMusic::Unsigned(value) => value.to_string(),
         }
     }
 }
@@ -204,5 +300,38 @@ mod tests {
         assert_eq!(lines[1].start_time, 14.0);
         assert_eq!(lines[1].end_time, 19.0);
         assert_eq!(lines[0].music_id, "m1");
+    }
+
+    #[test]
+    fn normalize_removes_accents() {
+        assert_eq!(normalize("O Sábado Chegou"), "o sabado chegou");
+    }
+
+    #[test]
+    fn find_best_match_prefers_exact_match() {
+        let catalog = vec![
+            CatalogEntry {
+                id: "1".to_string(),
+                name: "Novo Hinário Adventista".to_string(),
+            },
+            CatalogEntry {
+                id: "2".to_string(),
+                name: "O Sábado Chegou".to_string(),
+            },
+        ];
+
+        let entry = find_best_match(&catalog, "O Sábado Chegou").expect("match");
+        assert_eq!(entry.id, "2");
+    }
+
+    #[test]
+    fn find_best_match_allows_containment() {
+        let catalog = vec![CatalogEntry {
+            id: "2".to_string(),
+            name: "O Sábado Chegou".to_string(),
+        }];
+
+        let entry = find_best_match(&catalog, "O Sábado Chegou (Lyrics)").expect("match");
+        assert_eq!(entry.id, "2");
     }
 }

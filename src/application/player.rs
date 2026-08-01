@@ -694,6 +694,7 @@ mod tests {
             pool.clone(),
             Arc::clone(&youtube),
             Arc::clone(&whisper),
+            std::env::temp_dir(),
         ));
         let settings = crate::domain::settings::Settings::default();
         Some(Player::new(

@@ -4,6 +4,7 @@ mod infrastructure;
 mod presentation;
 mod shared;
 
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use anyhow::Context;
@@ -52,6 +53,7 @@ async fn main() -> anyhow::Result<()> {
         pool.clone(),
         Arc::clone(&youtube),
         Arc::clone(&whisper),
+        PathBuf::from(settings.cache_path.clone()),
     ));
 
     let player = Player::new(

@@ -1,3 +1,4 @@
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -31,6 +32,7 @@ pub struct LyricsService {
     louvorja: Arc<LouvorJaProvider>,
     netease: Arc<NeteaseProvider>,
     whisper: Arc<WhisperService>,
+    cache_path: PathBuf,
 }
 
 impl LyricsService {
@@ -38,6 +40,7 @@ impl LyricsService {
         pool: SqlitePool,
         youtube: Arc<YoutubeService>,
         whisper: Arc<WhisperService>,
+        cache_path: PathBuf,
     ) -> Self {
         Self {
             pool,
@@ -45,6 +48,7 @@ impl LyricsService {
             louvorja: Arc::new(LouvorJaProvider::new()),
             netease: Arc::new(NeteaseProvider::new()),
             whisper,
+            cache_path,
         }
     }
 
@@ -101,7 +105,11 @@ impl LyricsService {
         tracing::info!("candidatos de título para busca: {:?}", title_candidates);
 
         for candidate in &title_candidates {
-            match self.louvorja.fetch_synced_lyrics(candidate, music_id).await {
+            match self
+                .louvorja
+                .fetch_synced_lyrics(candidate, music_id, &self.cache_path)
+                .await
+            {
                 Ok(Some(lines)) if !lines.is_empty() => {
                     return Ok(self.persist_and_reload(&repository, music_id, &lines).await);
                 }
@@ -242,6 +250,7 @@ mod tests {
             pool.clone(),
             Arc::new(crate::infrastructure::youtube::YoutubeService::new()),
             Arc::new(crate::infrastructure::whisper::WhisperService::new()),
+            std::env::temp_dir(),
         );
         let repository = LyricsRepository::new(&pool);
         let original = vec![line("m1", 0.0, "primeira"), line("m1", 1.0, "segunda")];
