@@ -90,10 +90,10 @@ fn flush_cue(
     }
 
     // Deduplica cues consecutivos com texto idêntico.
-    if let Some(last) = lines.last() {
-        if last.text == text {
-            return;
-        }
+    if let Some(last) = lines.last()
+        && last.text == text
+    {
+        return;
     }
 
     lines.push(LyricsLine {
@@ -111,7 +111,7 @@ fn flush_cue(
 fn parse_timecode(line: &str) -> Option<(f64, f64)> {
     let (left, right) = line.split_once("-->")?;
     // O lado direito pode conter settings (ex.: "align:start position:0%").
-    let end_token = right.trim().split_whitespace().next()?;
+    let end_token = right.split_whitespace().next()?;
     let start = parse_timestamp(left.trim())?;
     let end = parse_timestamp(end_token)?;
     Some((start, end))

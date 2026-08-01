@@ -8,7 +8,7 @@ use crate::domain::lyrics::LyricsLine;
 use crate::infrastructure::lyrics_repository::LyricsRepository;
 use crate::infrastructure::music_repository::MusicRepository;
 use crate::infrastructure::providers::{
-    louvorja::LouvorJaProvider, lrc_parser, srt_parser, vtt_parser,
+    louvorja::LouvorJaProvider, lrc_parser, netease::NeteaseProvider, srt_parser, vtt_parser,
 };
 use crate::infrastructure::whisper::WhisperService;
 use crate::infrastructure::youtube::YoutubeService;
@@ -29,6 +29,7 @@ pub struct LyricsService {
     pool: SqlitePool,
     youtube: Arc<YoutubeService>,
     louvorja: Arc<LouvorJaProvider>,
+    netease: Arc<NeteaseProvider>,
     whisper: Arc<WhisperService>,
 }
 
@@ -42,6 +43,7 @@ impl LyricsService {
             pool,
             youtube,
             louvorja: Arc::new(LouvorJaProvider::new()),
+            netease: Arc::new(NeteaseProvider::new()),
             whisper,
         }
     }
@@ -107,7 +109,20 @@ impl LyricsService {
             Err(e) => tracing::warn!("falha ao consultar o LouvorJA: {e}"),
         }
 
-        // 4. LRCLib (o music_id é usado como termo de busca).
+        // 4. NetEase.
+        match self
+            .netease
+            .fetch_synced_lyrics(&louvorja_query, music_id)
+            .await
+        {
+            Ok(Some(lines)) if !lines.is_empty() => {
+                return Ok(self.persist_and_reload(&repository, music_id, &lines).await);
+            }
+            Ok(_) => {}
+            Err(e) => tracing::warn!("falha ao consultar o NetEase: {e}"),
+        }
+
+        // 5. LRCLib (o music_id é usado como termo de busca).
         match self.fetch_from_lrclib(music_id).await {
             Ok(Some(lrc_content)) => {
                 let lines = lrc_parser::parse(&lrc_content, music_id);
@@ -119,7 +134,7 @@ impl LyricsService {
             Err(e) => tracing::warn!("falha ao consultar o LRCLib: {e}"),
         }
 
-        // 5. Fallback com IA (Whisper): transcreve o áudio local, se houver.
+        // 6. Fallback com IA (Whisper): transcreve o áudio local, se houver.
         if let Some(path) = audio_path {
             on_status("Gerando sincronização de letras via IA Whisper (isso pode demorar)...");
             match self.whisper.transcribe(path, music_id).await {

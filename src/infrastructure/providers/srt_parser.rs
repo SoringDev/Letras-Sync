@@ -102,7 +102,7 @@ fn flush_cue(
 /// Retorna `Some((start, end))` em segundos, ou `None` se não for um timecode.
 fn parse_timecode(line: &str) -> Option<(f64, f64)> {
     let (left, right) = line.split_once("-->")?;
-    let end_token = right.trim().split_whitespace().next()?;
+    let end_token = right.split_whitespace().next()?;
     let start = parse_timestamp(left.trim())?;
     let end = parse_timestamp(end_token)?;
     Some((start, end))

@@ -1083,40 +1083,6 @@ impl AppController {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn load_url_resets_clear_screen() {
-        let mut controller = AppController::default();
-        controller.clear_screen = true;
-
-        controller.load_url("https://example.com/watch?v=test".to_string());
-
-        assert!(!controller.clear_screen);
-    }
-
-    #[test]
-    fn can_seek_requires_positive_duration_and_finite_position() {
-        assert!(!can_seek(0.0, 10.0));
-        assert!(!can_seek(-1.0, 10.0));
-        assert!(!can_seek(120.0, f64::NAN));
-        assert!(!can_seek(120.0, -1.0));
-        assert!(can_seek(120.0, 0.0));
-        assert!(can_seek(120.0, 119.5));
-    }
-
-    #[test]
-    fn trim_lyric_line_text_removes_trailing_noise() {
-        assert_eq!(
-            trim_lyric_line_text("Linha final!!!   "),
-            "Linha final".to_string()
-        );
-        assert_eq!(trim_lyric_line_text("Verso 2...??"), "Verso 2".to_string());
-    }
-}
-
 /// Inicializa a interface do operador e a janela de projeção.
 ///
 /// Em ambientes sem servidor gráfico (ex.: testes automatizados headless),
@@ -1154,4 +1120,40 @@ pub fn run_operator_ui(
     engine.exec();
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn load_url_resets_clear_screen() {
+        let mut controller = AppController {
+            clear_screen: true,
+            ..AppController::default()
+        };
+
+        controller.load_url("https://example.com/watch?v=test".to_string());
+
+        assert!(!controller.clear_screen);
+    }
+
+    #[test]
+    fn can_seek_requires_positive_duration_and_finite_position() {
+        assert!(!can_seek(0.0, 10.0));
+        assert!(!can_seek(-1.0, 10.0));
+        assert!(!can_seek(120.0, f64::NAN));
+        assert!(!can_seek(120.0, -1.0));
+        assert!(can_seek(120.0, 0.0));
+        assert!(can_seek(120.0, 119.5));
+    }
+
+    #[test]
+    fn trim_lyric_line_text_removes_trailing_noise() {
+        assert_eq!(
+            trim_lyric_line_text("Linha final!!!   "),
+            "Linha final".to_string()
+        );
+        assert_eq!(trim_lyric_line_text("Verso 2...??"), "Verso 2".to_string());
+    }
 }
