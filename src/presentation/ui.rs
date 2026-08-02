@@ -202,6 +202,16 @@ pub struct AppController {
     load_music: qt_method!(
         fn load_music(&mut self, url: QString) {
             let input = url.to_string();
+            let forced_provider =
+                parse_debug_lyrics_provider(&self.debug_lyrics_provider_override.to_string());
+
+            if forced_provider.is_some() && !is_web_or_file_url(&input) {
+                self.error_message =
+                    QString::from("Depuração de provider exige URL do YouTube ou arquivo local");
+                self.error_message_changed();
+                return;
+            }
+
             if is_web_or_file_url(&input) {
                 self.load_url(input);
             } else {

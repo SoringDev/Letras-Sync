@@ -344,7 +344,7 @@ ApplicationWindow {
     Shortcut {
         sequence: "Ctrl+="
         context: Qt.WindowShortcut
-        onActivated: appController.set_font_size(Math.min(appController.font_size + 2, 150))
+        onActivated: appController.set_font_size(Math.min(appController.font_size + 2, 240))
     }
 
     Shortcut {
@@ -637,28 +637,28 @@ ApplicationWindow {
                                 CheckBox {
                                     text: "LRCLib"
                                     checked: appController.debug_lyrics_provider_override === "lrclib"
-                                    onClicked: appController.set_debug_lyrics_provider_override(checked ? "lrclib" : "")
+                                    onToggled: appController.set_debug_lyrics_provider_override(checked ? "lrclib" : "")
                                     font: operatorWindow.smallFont
                                 }
 
                                 CheckBox {
                                     text: "YouTube"
                                     checked: appController.debug_lyrics_provider_override === "youtube"
-                                    onClicked: appController.set_debug_lyrics_provider_override(checked ? "youtube" : "")
+                                    onToggled: appController.set_debug_lyrics_provider_override(checked ? "youtube" : "")
                                     font: operatorWindow.smallFont
                                 }
 
                                 CheckBox {
                                     text: "NetEase"
                                     checked: appController.debug_lyrics_provider_override === "netease"
-                                    onClicked: appController.set_debug_lyrics_provider_override(checked ? "netease" : "")
+                                    onToggled: appController.set_debug_lyrics_provider_override(checked ? "netease" : "")
                                     font: operatorWindow.smallFont
                                 }
 
                                 CheckBox {
                                     text: "Whisper"
                                     checked: appController.debug_lyrics_provider_override === "whisper"
-                                    onClicked: appController.set_debug_lyrics_provider_override(checked ? "whisper" : "")
+                                    onToggled: appController.set_debug_lyrics_provider_override(checked ? "whisper" : "")
                                     font: operatorWindow.smallFont
                                 }
 
@@ -1096,7 +1096,7 @@ ApplicationWindow {
                                 Layout.preferredWidth: operatorWindow.styleInputWidth
                                 Layout.maximumWidth: operatorWindow.styleInputWidth
                                 font: operatorWindow.inputFont
-                                from: 12; to: 150; value: appController.font_size
+                                from: 12; to: 240; value: appController.font_size
                                 onValueModified: appController.set_font_size(value)
                             }
                         }

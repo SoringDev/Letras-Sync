@@ -352,12 +352,11 @@ impl LyricsService {
                 on_status("Depuração: buscando apenas no Whisper...");
                 if let Some(path) = audio_path {
                     let lines = self.whisper.transcribe(path, music_id).await?;
-                    if let Some(lines) = self
-                        .accept_portuguese_lyrics(repository, music_id, "Whisper", lines)
-                        .await
-                    {
-                        return Ok(lines);
+                    if lines.is_empty() {
+                        return Ok(Vec::new());
                     }
+
+                    return Ok(self.persist_and_reload(repository, music_id, &lines).await);
                 }
             }
         }
