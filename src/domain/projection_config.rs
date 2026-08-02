@@ -35,7 +35,7 @@ impl Default for ProjectionConfig {
             dynamic_font_scaling: true,
             min_font_size: 32,
             max_font_multiplier: 1.5,
-            margin_horizontal: 70,        // Evita que textos longos encostem nas bordas
+            margin_horizontal: 70, // Evita que textos longos encostem nas bordas
             margin_vertical: 30,
             horizontal_alignment: "center".to_string(),
             vertical_alignment: "center".to_string(),

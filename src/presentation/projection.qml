@@ -52,6 +52,38 @@ Window {
             return String(value).toUpperCase();
         }
 
+        function computeFontSize(rawText, baseSize) {
+            if (!appController.projection_dynamic_font_scaling)
+                return baseSize;
+
+            var text = String(rawText || "").trim();
+            var len = text.length;
+            if (len === 0)
+                return baseSize;
+
+            var scale = 1.0;
+            if (len <= 15) {
+                scale = 1.4 - (len / 15) * 0.15;
+            } else if (len <= 35) {
+                scale = 1.25 - ((len - 15) / 20) * 0.25;
+            } else if (len <= 65) {
+                scale = 1.0 - ((len - 35) / 30) * 0.25;
+            } else {
+                scale = Math.max(0.55, 0.75 - ((len - 65) / 50) * 0.2);
+            }
+
+            var maxMultiplier = appController.projection_max_font_multiplier > 0
+                ? appController.projection_max_font_multiplier
+                : 1.5;
+            scale = Math.min(maxMultiplier, scale);
+
+            var calculated = Math.round(baseSize * scale);
+            var minSize = appController.projection_min_font_size > 0
+                ? appController.projection_min_font_size
+                : 32;
+            return Math.max(minSize, calculated);
+        }
+
         Connections {
             target: appController
 
@@ -93,7 +125,13 @@ Window {
             horizontalAlignment: textBlock.hAlign(appController.projection_horizontal_alignment)
             verticalAlignment: textBlock.vAlign(appController.projection_vertical_alignment)
             font.family: appController.projection_font_family
-            font.pixelSize: appController.projection_font_size
+            font.pixelSize: textBlock.computeFontSize(
+                                appController.clear_screen ? "" : appController.lyric_text,
+                                appController.projection_font_size)
+            fontSizeMode: Text.Fit
+            minimumPixelSize: appController.projection_min_font_size > 0
+                              ? appController.projection_min_font_size
+                              : 32
             font.weight: appController.projection_font_weight
             font.letterSpacing: appController.projection_letter_spacing
             lineHeightMode: Text.ProportionalHeight
@@ -119,7 +157,13 @@ Window {
             horizontalAlignment: textBlock.hAlign(appController.projection_horizontal_alignment)
             verticalAlignment: textBlock.vAlign(appController.projection_vertical_alignment)
             font.family: appController.projection_font_family
-            font.pixelSize: appController.projection_font_size
+            font.pixelSize: textBlock.computeFontSize(
+                                appController.clear_screen ? "" : appController.lyric_text,
+                                appController.projection_font_size)
+            fontSizeMode: Text.Fit
+            minimumPixelSize: appController.projection_min_font_size > 0
+                              ? appController.projection_min_font_size
+                              : 32
             font.weight: appController.projection_font_weight
             font.letterSpacing: appController.projection_letter_spacing
             lineHeightMode: Text.ProportionalHeight
