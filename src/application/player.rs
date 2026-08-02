@@ -9,7 +9,9 @@ use tokio::sync::{RwLock, broadcast};
 use crate::domain::lyrics::LyricsLine;
 use crate::domain::music::Music;
 use crate::infrastructure::audio::AudioEngine;
+use crate::infrastructure::lyrics_repository::LyricsRepository;
 use crate::infrastructure::music_repository::MusicRepository;
+use crate::infrastructure::providers::louvorja::LouvorJaProvider;
 use crate::infrastructure::youtube::YoutubeService;
 use crate::shared::utils::{extract_video_id, normalize_youtube_url};
 
@@ -148,9 +150,34 @@ fn local_music_id(path: &Path) -> String {
     format!("local-{hash:016x}")
 }
 
+fn extract_louvorja_id(input: &str) -> Option<String> {
+    let trimmed = input.trim();
+
+    if let Some(id) = trimmed.strip_prefix("louvorja_") {
+        let id = id.trim().split(['?', '#']).next().unwrap_or("").trim();
+        if !id.is_empty() {
+            return Some(id.to_string());
+        }
+    }
+
+    if trimmed.contains("louvorja.com.br") {
+        let tail = trimmed.rsplit('/').find(|part| !part.trim().is_empty())?;
+        let id = tail.split(['?', '#']).next().unwrap_or("").trim();
+        if !id.is_empty() {
+            return Some(id.to_string());
+        }
+    }
+
+    None
+}
+
 async fn media_music_id(input: &str) -> Result<String> {
     if let Some(path) = resolve_local_media_path(input).await? {
         return Ok(local_music_id(&path));
+    }
+
+    if let Some(louvorja_id) = extract_louvorja_id(input) {
+        return Ok(format!("louvorja_{louvorja_id}"));
     }
 
     extract_video_id(input)
@@ -166,6 +193,7 @@ async fn media_music_id(input: &str) -> Result<String> {
 pub struct Player {
     audio_engine: Arc<AudioEngine>,
     youtube_service: Arc<YoutubeService>,
+    louvorja_service: Arc<LouvorJaProvider>,
     lyrics_service: Arc<LyricsService>,
     pool: SqlitePool,
     cache_path: PathBuf,
@@ -188,6 +216,7 @@ impl Player {
         let player = Arc::new(Self {
             audio_engine,
             youtube_service,
+            louvorja_service: Arc::new(LouvorJaProvider::new()),
             lyrics_service,
             pool,
             cache_path,
@@ -227,10 +256,100 @@ impl Player {
             return self.load_local_media(&local_path).await;
         }
 
+        if let Some(louvorja_id) = extract_louvorja_id(input) {
+            return self.load_louvorja_song(&louvorja_id).await;
+        }
+
         let normalized =
             crate::shared::utils::normalize_youtube_url(input).unwrap_or_else(|| input.to_string());
 
         self.load_remote_youtube(&normalized).await
+    }
+
+    pub async fn load_louvorja_song(&self, louvorja_id: &str) -> Result<()> {
+        self.emit(PlayerEvent::LoadingStatus(
+            "Buscando música no LouvorJA...".to_string(),
+        ));
+        self.set_status(PlaybackState::Loading).await;
+
+        let result = async {
+            let detail = self
+                .louvorja_service
+                .fetch_song_by_id(louvorja_id, &format!("louvorja_{louvorja_id}"))
+                .await?
+                .context("LouvorJA não retornou letra para a música solicitada")?;
+
+            let music_id = format!("louvorja_{}", detail.id);
+            let audio_url = detail.audio_url.as_deref().ok_or_else(|| {
+                anyhow::anyhow!("LouvorJA não informou URL de áudio para {louvorja_id}")
+            })?;
+
+            let music = Music {
+                id: music_id.clone(),
+                title: detail.title.clone(),
+                artist: detail
+                    .album
+                    .clone()
+                    .or_else(|| Some("LouvorJA".to_string())),
+                youtube_url: format!("https://api.louvorja.com.br/pt/musics/{louvorja_id}"),
+                duration: None,
+                thumbnail: None,
+                created_at: None,
+                sync_offset: 0.0,
+                has_lyrics: None,
+            };
+
+            let music_repo = MusicRepository::new(&self.pool);
+            music_repo.save(&music).await?;
+
+            let lyrics_repo = LyricsRepository::new(&self.pool);
+            lyrics_repo.delete_by_music_id(&music.id).await?;
+            lyrics_repo.save_all(&detail.lines).await?;
+
+            let saved_lyrics = match lyrics_repo.find_by_music_id(&music.id).await {
+                Ok(lines) if !lines.is_empty() => lines,
+                _ => detail.lines.clone(),
+            };
+
+            let cache_dir = self.cache_path.as_path();
+            tokio::fs::create_dir_all(cache_dir)
+                .await
+                .with_context(|| {
+                    format!(
+                        "falha ao criar o diretório de cache {}",
+                        cache_dir.display()
+                    )
+                })?;
+            let local_path = cache_dir.join(format!("louvorja_{louvorja_id}.mp3"));
+            if !tokio::fs::try_exists(&local_path).await.unwrap_or(false) {
+                download_file(audio_url, &local_path).await?;
+            }
+
+            self.audio_engine.load(&local_path.to_string_lossy())?;
+            self.audio_engine.pause()?;
+
+            {
+                let mut state = self.state.write().await;
+                state.current_music = Some(music.clone());
+                state.current_lyrics = saved_lyrics.clone();
+                state.status = PlaybackState::Paused;
+            }
+
+            self.emit(PlayerEvent::MusicLoaded {
+                music,
+                lyrics: saved_lyrics,
+            });
+            self.emit(PlayerEvent::StateChanged(PlaybackState::Paused));
+
+            Ok::<(), anyhow::Error>(())
+        }
+        .await;
+
+        if result.is_err() {
+            self.set_status(PlaybackState::Stopped).await;
+        }
+
+        result
     }
 
     async fn load_remote_youtube(&self, url: &str) -> Result<()> {
@@ -639,6 +758,34 @@ async fn find_cached_audio(cache_dir: &Path, video_id: &str) -> Result<Option<Pa
     Ok(None)
 }
 
+async fn download_file(url: &str, destination: &Path) -> Result<()> {
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(10))
+        .build()?;
+
+    let bytes = client
+        .get(url)
+        .send()
+        .await
+        .context("falha ao baixar o áudio do LouvorJA")?
+        .error_for_status()
+        .context("o áudio do LouvorJA retornou erro")?
+        .bytes()
+        .await
+        .context("falha ao ler os bytes do áudio do LouvorJA")?;
+
+    tokio::fs::write(destination, bytes)
+        .await
+        .with_context(|| {
+            format!(
+                "falha ao salvar o áudio do LouvorJA em {}",
+                destination.display()
+            )
+        })?;
+
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -743,6 +890,37 @@ mod tests {
 
         assert_eq!(local_music_id(path_a), local_music_id(path_a));
         assert_ne!(local_music_id(path_a), local_music_id(path_b));
+    }
+
+    #[test]
+    fn extract_louvorja_id_from_prefixed_input() {
+        assert_eq!(
+            extract_louvorja_id("louvorja_1770").as_deref(),
+            Some("1770")
+        );
+    }
+
+    #[test]
+    fn extract_louvorja_id_from_url_input() {
+        assert_eq!(
+            extract_louvorja_id("https://api.louvorja.com.br/pt/musics/1770")
+                .as_deref(),
+            Some("1770")
+        );
+    }
+
+    #[tokio::test]
+    async fn media_music_id_supports_louvorja_inputs() {
+        assert_eq!(
+            media_music_id("louvorja_1770").await.expect("id"),
+            "louvorja_1770"
+        );
+        assert_eq!(
+            media_music_id("https://api.louvorja.com.br/pt/musics/1770")
+                .await
+                .expect("url"),
+            "louvorja_1770"
+        );
     }
 
     #[tokio::test]

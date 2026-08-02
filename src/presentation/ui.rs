@@ -1,3 +1,4 @@
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use qmetaobject::prelude::*;
@@ -13,7 +14,9 @@ use crate::domain::music::Music;
 use crate::domain::settings::Settings;
 use crate::infrastructure::lyrics_repository::LyricsRepository;
 use crate::infrastructure::music_repository::MusicRepository;
-use crate::infrastructure::providers::{lrc_parser, lyrics_export, srt_parser, vtt_parser};
+use crate::infrastructure::providers::{
+    louvorja::LouvorJaProvider, lrc_parser, lyrics_export, srt_parser, vtt_parser,
+};
 
 qrc!(register_qml_resources,
     "letras_sync/presentation" {
@@ -40,6 +43,13 @@ fn playback_state_label(state: PlaybackState) -> &'static str {
 
 fn can_seek(duration: f64, seconds: f64) -> bool {
     duration > 0.0 && seconds.is_finite() && seconds >= 0.0
+}
+
+fn is_web_or_file_url(input: &str) -> bool {
+    let trimmed = input.trim();
+    trimmed.starts_with("http://")
+        || trimmed.starts_with("https://")
+        || trimmed.starts_with("file://")
 }
 
 fn qml_path_to_pathbuf(file_path: &str) -> std::path::PathBuf {
@@ -119,6 +129,9 @@ pub struct AppController {
     playlist: qt_property!(QVariantList; NOTIFY playlist_changed),
     playlist_changed: qt_signal!(),
 
+    louvorja_search_results: qt_property!(QVariantList; NOTIFY louvorja_search_results_changed),
+    louvorja_search_results_changed: qt_signal!(),
+
     font_size: qt_property!(u32; NOTIFY style_changed),
     font_family: qt_property!(QString; NOTIFY style_changed),
     font_color: qt_property!(QString; NOTIFY style_changed),
@@ -154,7 +167,142 @@ pub struct AppController {
 
     load_music: qt_method!(
         fn load_music(&mut self, url: QString) {
-            self.load_url(url.to_string());
+            let input = url.to_string();
+            if is_web_or_file_url(&input) {
+                self.load_url(input);
+            } else {
+                self.search_louvorja(url);
+            }
+        }
+    ),
+
+    search_louvorja: qt_method!(
+        fn search_louvorja(&mut self, query: QString) {
+            let query = query.to_string();
+            let trimmed = query.trim().to_string();
+
+            self.louvorja_search_results = QVariantList::default();
+            self.louvorja_search_results_changed();
+
+            if trimmed.is_empty() {
+                self.error_message =
+                    QString::from("Erro: informe o nome da música para buscar no LouvorJA");
+                self.error_message_changed();
+                return;
+            }
+
+            let cache_path = PathBuf::from(self.settings.cache_path.clone());
+            let qptr = QPointer::from(&*self);
+            let apply = queued_callback(
+                move |items: Vec<crate::infrastructure::providers::louvorja::CatalogEntry>| {
+                    if let Some(pinned) = qptr.as_pinned() {
+                        let mut this = pinned.borrow_mut();
+                        let mut list = QVariantList::default();
+                        for item in items {
+                            let mut map = QVariantMap::default();
+                            map.insert("id".into(), QString::from(item.id.as_str()).into());
+                            map.insert("name".into(), QString::from(item.name.as_str()).into());
+                            map.insert("album".into(), QString::from(item.album.as_str()).into());
+                            list.push(map.into());
+                        }
+                        this.louvorja_search_results = list;
+                        this.louvorja_search_results_changed();
+                        if this.louvorja_search_results.is_empty() {
+                            this.error_message =
+                                QString::from("Nenhum resultado encontrado no LouvorJA");
+                            this.error_message_changed();
+                        } else {
+                            this.error_message = QString::default();
+                            this.error_message_changed();
+                        }
+                    }
+                },
+            );
+
+            let qptr_err = QPointer::from(&*self);
+            let show_error = queued_callback(move |msg: String| {
+                if let Some(pinned) = qptr_err.as_pinned() {
+                    let mut this = pinned.borrow_mut();
+                    this.error_message = QString::from(msg.as_str());
+                    this.error_message_changed();
+                }
+            });
+
+            tokio::spawn(async move {
+                let provider = LouvorJaProvider::new();
+                match provider.search_catalog(&trimmed, &cache_path).await {
+                    Ok(items) => apply(items),
+                    Err(err) => {
+                        tracing::error!("falha ao buscar no LouvorJA para '{trimmed}': {err:?}");
+                        show_error(format!("Erro: falha ao buscar no LouvorJA: {err}"));
+                    }
+                }
+            });
+        }
+    ),
+
+    load_louvorja_song: qt_method!(
+        fn load_louvorja_song(&mut self, id: QString) {
+            let louvorja_id = id.to_string();
+            if louvorja_id.trim().is_empty() {
+                return;
+            }
+
+            self.louvorja_search_results = QVariantList::default();
+            self.louvorja_search_results_changed();
+
+            self.current_lyrics = QVariantList::default();
+            self.current_lyrics_changed();
+            self.current_music_id = QString::default();
+            self.current_music_id_changed();
+            self.active_line_id = -1;
+            self.active_line_id_changed();
+            self.lyric_text = QString::default();
+            self.lyric_text_changed();
+            self.next_lyric_text = QString::default();
+            self.next_lyric_text_changed();
+            self.clear_screen = false;
+            self.clear_screen_changed();
+
+            let Some(player) = self.player.clone() else {
+                return;
+            };
+            self.error_message = QString::default();
+            self.error_message_changed();
+            self.loading_status = QString::default();
+            self.loading_status_changed();
+            self.loading = true;
+            self.loading_changed();
+
+            let qptr = QPointer::from(&*self);
+            let refresh = queued_callback(move |()| {
+                if let Some(pinned) = qptr.as_pinned() {
+                    pinned.borrow().spawn_history_refresh();
+                }
+            });
+
+            let qptr_err = QPointer::from(&*self);
+            let show_error = queued_callback(move |msg: String| {
+                if let Some(pinned) = qptr_err.as_pinned() {
+                    let mut this = pinned.borrow_mut();
+                    this.error_message = QString::from(msg.as_str());
+                    this.error_message_changed();
+                    this.loading = false;
+                    this.loading_changed();
+                }
+            });
+
+            tokio::spawn(async move {
+                match player.load_louvorja_song(&louvorja_id).await {
+                    Ok(()) => refresh(()),
+                    Err(err) => {
+                        tracing::error!(
+                            "falha ao carregar a música do LouvorJA {louvorja_id}: {err:?}"
+                        );
+                        show_error(format!("Erro ao carregar do LouvorJA: {err}"));
+                    }
+                }
+            });
         }
     ),
 
@@ -955,6 +1103,7 @@ impl AppController {
         controller.settings = settings.clone();
         controller.current_lyrics = QVariantList::default();
         controller.current_music_id = QString::default();
+        controller.louvorja_search_results = QVariantList::default();
         controller.active_line_id = -1;
         controller
     }

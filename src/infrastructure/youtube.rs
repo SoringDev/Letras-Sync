@@ -164,7 +164,7 @@ impl YoutubeService {
 fn audio_download_args(url: &str, output_template: &Path) -> Vec<OsString> {
     vec![
         OsString::from("-f"),
-        OsString::from("ba"),
+        OsString::from("ba/b/best"),
         OsString::from("--no-playlist"),
         OsString::from("--no-progress"),
         OsString::from("-o"),
@@ -177,7 +177,7 @@ fn audio_download_args(url: &str, output_template: &Path) -> Vec<OsString> {
 
 fn yt_dlp_command() -> Command {
     let mut command = Command::new("yt-dlp");
-    command.args(["--extractor-args", "youtube:player_client=android"]);
+    command.args(["--extractor-args", "youtube:player_client=android,web,mweb"]);
 
     if node_runtime_available() {
         command.args(["--js-runtimes", "node"]);
@@ -232,7 +232,7 @@ mod tests {
         let output_path = Path::new("/tmp/letras_sync_download_test.%(ext)s");
         let args = audio_download_args("https://youtu.be/abc123", output_path);
 
-        assert!(args.iter().any(|arg| arg == OsStr::new("ba")));
+        assert!(args.iter().any(|arg| arg == OsStr::new("ba/b/best")));
         assert!(!args.iter().any(|arg| arg == OsStr::new("-x")));
         assert!(!args.iter().any(|arg| arg == OsStr::new("--audio-format")));
     }

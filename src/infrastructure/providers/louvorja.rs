@@ -7,9 +7,11 @@ use serde::{Deserialize, Serialize};
 use crate::domain::lyrics::LyricsLine;
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
-struct CatalogEntry {
-    id: String,
-    name: String,
+pub struct CatalogEntry {
+    pub id: String,
+    pub name: String,
+    #[serde(default)]
+    pub album: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -22,6 +24,7 @@ struct CatalogPageResponse {
 struct CatalogPageItem {
     id_music: CatalogIdMusic,
     name: String,
+    url_music: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -39,6 +42,7 @@ struct MusicResponse {
 
 #[derive(Debug, Deserialize)]
 struct MusicDetail {
+    name: Option<String>,
     url_music: Option<String>,
     lyric: Option<Vec<LyricItem>>,
 }
@@ -51,9 +55,92 @@ struct LyricItem {
 
 pub struct LouvorJaProvider;
 
+#[derive(Debug, Clone)]
+pub struct LouvorJaDetailResult {
+    pub id: String,
+    pub title: String,
+    pub album: Option<String>,
+    pub audio_url: Option<String>,
+    pub lines: Vec<LyricsLine>,
+}
+
 impl LouvorJaProvider {
     pub fn new() -> Self {
         Self
+    }
+
+    pub async fn search_catalog(
+        &self,
+        query: &str,
+        cache_path: &Path,
+    ) -> Result<Vec<CatalogEntry>> {
+        let client = reqwest::Client::builder()
+            .timeout(Duration::from_secs(10))
+            .build()?;
+        let catalog = load_or_fetch_catalog(&client, cache_path).await?;
+        let q = normalize(query);
+        if q.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let mut matches: Vec<CatalogEntry> = catalog
+            .into_iter()
+            .filter(|e| {
+                let n = normalize(&e.name);
+                n.contains(&q) || q.contains(&n)
+            })
+            .collect();
+
+        matches.sort_by_key(|e| e.id.parse::<u64>().unwrap_or(0));
+        matches.reverse();
+        matches.truncate(15);
+
+        Ok(matches)
+    }
+
+    pub async fn fetch_song_by_id(
+        &self,
+        louvorja_id: &str,
+        music_id: &str,
+    ) -> Result<Option<LouvorJaDetailResult>> {
+        let client = reqwest::Client::builder()
+            .timeout(Duration::from_secs(10))
+            .build()?;
+        let detail_url = format!("https://api.louvorja.com.br/pt/musics/{louvorja_id}");
+        let detail: MusicResponse = client
+            .get(&detail_url)
+            .send()
+            .await
+            .context("falha ao consultar o detalhe do LouvorJA")?
+            .error_for_status()
+            .context("LouvorJA retornou erro no detalhe")?
+            .json()
+            .await
+            .context("falha ao desserializar o detalhe do LouvorJA")?;
+
+        let Some(lyrics) = detail.data.lyric else {
+            return Ok(None);
+        };
+
+        let lines = build_lines(music_id, lyrics);
+        if lines.is_empty() {
+            return Ok(None);
+        }
+
+        Ok(Some(LouvorJaDetailResult {
+            id: louvorja_id.to_string(),
+            title: detail
+                .data
+                .name
+                .unwrap_or_else(|| format!("LouvorJA #{louvorja_id}")),
+            album: detail.data.url_music.as_deref().and_then(extract_album_from_url),
+            audio_url: detail
+                .data
+                .url_music
+                .map(|url| url.trim().to_string())
+                .filter(|url| !url.is_empty()),
+            lines,
+        }))
     }
 
     pub async fn fetch_synced_lyrics(
@@ -185,11 +272,15 @@ async fn load_or_fetch_catalog(
     if !needs_refresh {
         let content = tokio::fs::read_to_string(&catalog_file).await?;
         let entries: Vec<CatalogEntry> = serde_json::from_str(&content)?;
-        tracing::info!(
-            "louvorja: catálogo local carregado ({} músicas)",
-            entries.len()
-        );
-        return Ok(entries);
+        if !entries.is_empty() && catalog_needs_album_refresh(&entries) {
+            tracing::info!("louvorja: cache local antigo sem álbum, recarregando catálogo");
+        } else {
+            tracing::info!(
+                "louvorja: catálogo local carregado ({} músicas)",
+                entries.len()
+            );
+            return Ok(entries);
+        }
     }
 
     tracing::info!("louvorja: baixando catálogo completo...");
@@ -215,7 +306,13 @@ async fn load_or_fetch_catalog(
             let id = item.id_music.into_string();
             let name = item.name.trim().to_string();
             if !name.is_empty() {
-                all_entries.push(CatalogEntry { id, name });
+                let album = item
+                    .url_music
+                    .as_deref()
+                    .and_then(extract_album_from_url)
+                    .unwrap_or_default();
+
+                all_entries.push(CatalogEntry { id, name, album });
             }
         }
 
@@ -241,26 +338,98 @@ async fn load_or_fetch_catalog(
 }
 
 fn normalize(s: &str) -> String {
-    s.to_lowercase()
-        .replace(['á', 'à', 'ã', 'â'], "a")
-        .replace(['é', 'ê'], "e")
-        .replace(['í'], "i")
-        .replace(['ó', 'õ', 'ô'], "o")
-        .replace(['ú'], "u")
-        .replace(['ç'], "c")
+    s.chars()
+        .filter(|c| !('\u{0300}'..='\u{036F}').contains(c))
+        .collect::<String>()
+        .to_lowercase()
+        .chars()
+        .map(|c| match c {
+            'á' | 'à' | 'ã' | 'â' | 'ä' => 'a',
+            'é' | 'è' | 'ê' | 'ë' => 'e',
+            'í' | 'ì' | 'î' | 'ï' => 'i',
+            'ó' | 'ò' | 'õ' | 'ô' | 'ö' => 'o',
+            'ú' | 'ù' | 'û' | 'ü' => 'u',
+            'ç' => 'c',
+            'a'..='z' | '0'..='9' | ' ' => c,
+            _ => ' ',
+        })
+        .collect::<String>()
+        .split_whitespace()
+        .collect::<Vec<&str>>()
+        .join(" ")
+}
+
+fn extract_album_from_url(url: &str) -> Option<String> {
+    let mut bytes = Vec::with_capacity(url.len());
+    let mut chars = url.bytes();
+
+    while let Some(b) = chars.next() {
+        if b == b'%' {
+            let h1 = chars.next();
+            let h2 = chars.next();
+            if let (Some(h1), Some(h2)) = (h1, h2) {
+                if let Ok(val) = u8::from_str_radix(&format!("{}{}", h1 as char, h2 as char), 16) {
+                    bytes.push(val);
+                    continue;
+                }
+            }
+        }
+        bytes.push(b);
+    }
+
+    let decoded = String::from_utf8_lossy(&bytes);
+    let parts: Vec<&str> = decoded.split('/').filter(|s| !s.is_empty()).collect();
+
+    if parts.len() >= 2 {
+        let candidate = parts[parts.len() - 2].trim();
+        if !candidate.is_empty()
+            && candidate != "pt"
+            && candidate != "musics"
+            && candidate != "file"
+            && !candidate.contains("api.louvorja.com.br")
+        {
+            return Some(candidate.to_string());
+        }
+    }
+
+    None
+}
+
+fn catalog_needs_album_refresh(entries: &[CatalogEntry]) -> bool {
+    entries.iter().all(|entry| entry.album.trim().is_empty())
 }
 
 fn find_best_match<'a>(catalog: &'a [CatalogEntry], query: &str) -> Option<&'a CatalogEntry> {
     let q = normalize(query);
 
-    if let Some(entry) = catalog.iter().find(|entry| normalize(&entry.name) == q) {
-        return Some(entry);
+    if q.is_empty() {
+        return None;
     }
 
-    catalog.iter().find(|entry| {
-        let n = normalize(&entry.name);
-        n.contains(&q) || q.contains(&n)
-    })
+    let mut exact_matches: Vec<&'a CatalogEntry> = catalog
+        .iter()
+        .filter(|entry| normalize(&entry.name) == q)
+        .collect();
+
+    if !exact_matches.is_empty() {
+        exact_matches.sort_by_key(|entry| entry.id.parse::<u64>().unwrap_or(0));
+        return exact_matches.pop();
+    }
+
+    let mut partial_matches: Vec<&'a CatalogEntry> = catalog
+        .iter()
+        .filter(|entry| {
+            let n = normalize(&entry.name);
+            n.contains(&q) || q.contains(&n)
+        })
+        .collect();
+
+    if !partial_matches.is_empty() {
+        partial_matches.sort_by_key(|entry| entry.id.parse::<u64>().unwrap_or(0));
+        return partial_matches.pop();
+    }
+
+    None
 }
 
 fn parse_time(time: &str) -> Option<f64> {
@@ -373,15 +542,26 @@ mod tests {
     }
 
     #[test]
+    fn normalize_handles_nfd_unicode_and_punctuation() {
+        let nfd_title = "Vem, Santo Espi\u{301}rito, Agora";
+        let nfc_title = "Vem, Santo Espírito Agora";
+
+        assert_eq!(normalize(nfd_title), "vem santo espirito agora");
+        assert_eq!(normalize(nfc_title), "vem santo espirito agora");
+    }
+
+    #[test]
     fn find_best_match_prefers_exact_match() {
         let catalog = vec![
             CatalogEntry {
                 id: "1".to_string(),
                 name: "Novo Hinário Adventista".to_string(),
+                album: String::new(),
             },
             CatalogEntry {
                 id: "2".to_string(),
                 name: "O Sábado Chegou".to_string(),
+                album: String::new(),
             },
         ];
 
@@ -394,10 +574,31 @@ mod tests {
         let catalog = vec![CatalogEntry {
             id: "2".to_string(),
             name: "O Sábado Chegou".to_string(),
+            album: String::new(),
         }];
 
         let entry = find_best_match(&catalog, "O Sábado Chegou (Lyrics)").expect("match");
         assert_eq!(entry.id, "2");
+    }
+
+    #[test]
+    fn find_best_match_prefers_highest_id_for_newer_version() {
+        let catalog = vec![
+            CatalogEntry {
+                id: "431".to_string(),
+                name: "Vem, Santo Espírito Agora".to_string(),
+                album: String::new(),
+            },
+            CatalogEntry {
+                id: "1770".to_string(),
+                name: "Vem, Santo Espírito, Agora".to_string(),
+                album: String::new(),
+            },
+        ];
+
+        let matched = find_best_match(&catalog, "Vem, Santo Espi\u{301}rito, Agora");
+        assert!(matched.is_some());
+        assert_eq!(matched.unwrap().id, "1770");
     }
 
     #[test]
@@ -431,5 +632,53 @@ mod tests {
         assert_eq!(lyrics.len(), 1);
         assert_eq!(lyrics[0].lyric.as_deref(), Some("Lento e calmo foge o dia"));
         assert_eq!(lyrics[0].time, "00:00:24");
+    }
+
+    #[test]
+    fn extract_album_from_music_url() {
+        let url = "https://api.louvorja.com.br/file/musics/pt/1992 - Brilha Jesus/Nosso Sol É Jesus.mp3";
+
+        assert_eq!(
+            extract_album_from_url(url).as_deref(),
+            Some("1992 - Brilha Jesus")
+        );
+    }
+
+    #[test]
+    fn legacy_catalog_without_album_triggers_refresh() {
+        let catalog = vec![
+            CatalogEntry {
+                id: "1".to_string(),
+                name: "Nosso Sol é Jesus".to_string(),
+                album: String::new(),
+            },
+            CatalogEntry {
+                id: "2".to_string(),
+                name: "Brilha Jesus".to_string(),
+                album: String::new(),
+            },
+        ];
+
+        assert!(catalog_needs_album_refresh(&catalog));
+    }
+
+    #[cfg(test)]
+    mod tests_album_extraction {
+        use super::*;
+
+        #[test]
+        fn extracts_album_name_from_louvorja_url() {
+            let url1 = "https://api.louvorja.com.br/file/musics/pt/Hin%C3%A1rio%20Adventista%202022/Vem,%20Santo%20Esp%C3%ADrito,%20Agora.mp3";
+            assert_eq!(
+                extract_album_from_url(url1),
+                Some("Hinário Adventista 2022".to_string())
+            );
+
+            let url2 = "https://api.louvorja.com.br/file/musics/pt/1992%20-%20Brilha%20Jesus/Nosso%20Sol%20%C3%89%20Jesus.mp3";
+            assert_eq!(
+                extract_album_from_url(url2),
+                Some("1992 - Brilha Jesus".to_string())
+            );
+        }
     }
 }

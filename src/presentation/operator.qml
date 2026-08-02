@@ -29,6 +29,13 @@ ApplicationWindow {
             if (!lyricEditField.activeFocus)
                 operatorWindow.lyricDraft = appController.lyric_text
         }
+
+        function onLouvorja_search_resultsChanged() {
+            if (appController.louvorja_search_results.length > 0)
+                louvorjaSearchDialog.open()
+            else
+                louvorjaSearchDialog.close()
+        }
     }
 
     function saveLyricEdit() {
@@ -64,6 +71,193 @@ ApplicationWindow {
             selectedFile.toString(),
             operatorWindow.exportFormatFromFilter(selectedNameFilter.name)
         )
+    }
+
+    Dialog {
+        id: louvorjaSearchDialog
+        modal: true
+        focus: true
+        x: Math.round((operatorWindow.width - width) / 2)
+        y: Math.round((operatorWindow.height - height) / 2)
+        width: Math.min(operatorWindow.width * 0.88, 560)
+        height: Math.min(operatorWindow.height * 0.82, 460)
+        padding: 16
+        standardButtons: Dialog.NoButton
+
+        background: Rectangle {
+            color: "#1E1E24"
+            border.color: "#383A46"
+            border.width: 1
+            radius: 12
+        }
+
+        function loadLouvorjaSong(id) {
+            appController.load_louvorja_song(id)
+            louvorjaSearchDialog.close()
+        }
+
+        contentItem: ColumnLayout {
+            spacing: 12
+
+            RowLayout {
+                Layout.fillWidth: true
+                spacing: 12
+
+                ColumnLayout {
+                    Layout.fillWidth: true
+                    spacing: 4
+
+                    Label {
+                        Layout.fillWidth: true
+                        text: "Músicas Encontradas no LouvorJA"
+                        color: "#FFFFFF"
+                        font.pixelSize: 16
+                        font.bold: true
+                        elide: Text.ElideRight
+                    }
+
+                    Label {
+                        Layout.fillWidth: true
+                        text: "Selecione a versão desejada para carregar o áudio e a letra oficial"
+                        color: "#A0A4B8"
+                        font.pixelSize: 12
+                        wrapMode: Text.WordWrap
+                    }
+                }
+
+                ToolButton {
+                    id: closeButton
+                    text: "✕"
+                    implicitWidth: 32
+                    implicitHeight: 32
+                    hoverEnabled: true
+                    onClicked: louvorjaSearchDialog.close()
+                    background: Rectangle {
+                        color: "transparent"
+                        radius: 6
+                    }
+                    contentItem: Text {
+                        text: closeButton.text
+                        color: closeButton.hovered ? "#FFFFFF" : "#A0A4B8"
+                        horizontalAlignment: Text.AlignHCenter
+                        verticalAlignment: Text.AlignVCenter
+                        font.pixelSize: 18
+                        font.bold: true
+                    }
+                }
+            }
+
+            ListView {
+                id: louvorjaResultsList
+                Layout.fillWidth: true
+                Layout.fillHeight: true
+                clip: true
+                spacing: 10
+                model: appController.louvorja_search_results
+
+                delegate: Rectangle {
+                    id: resultCard
+                    width: ListView.view.width
+                    implicitHeight: resultRow.implicitHeight + 16
+                    radius: 8
+                    color: cardMouseArea.containsMouse ? "#323644" : "#282B36"
+                    border.width: 1
+                    border.color: cardMouseArea.containsMouse ? "#52586B" : "#383A46"
+
+                    property bool pendingSingleLoad: false
+
+                    Timer {
+                        id: singleClickTimer
+                        interval: 220
+                        repeat: false
+                        onTriggered: {
+                            if (resultCard.pendingSingleLoad)
+                                louvorjaSearchDialog.loadLouvorjaSong(modelData.id)
+                            resultCard.pendingSingleLoad = false
+                        }
+                    }
+
+                    MouseArea {
+                        id: cardMouseArea
+                        anchors.fill: parent
+                        z: -1
+                        hoverEnabled: true
+                        acceptedButtons: Qt.LeftButton
+                        onClicked: {
+                            resultCard.pendingSingleLoad = true
+                            singleClickTimer.restart()
+                        }
+                        onDoubleClicked: {
+                            singleClickTimer.stop()
+                            resultCard.pendingSingleLoad = false
+                            louvorjaSearchDialog.loadLouvorjaSong(modelData.id)
+                        }
+                    }
+
+                    RowLayout {
+                        id: resultRow
+                        anchors.fill: parent
+                        anchors.margins: 8
+                        spacing: 12
+
+                        Rectangle {
+                            Layout.preferredWidth: badgeText.implicitWidth + 18
+                            Layout.preferredHeight: 24
+                            radius: 6
+                            color: "#3A3E4E"
+
+                            Text {
+                                id: badgeText
+                                anchors.centerIn: parent
+                                text: "ID: " + modelData.id
+                                color: "#C4C8D8"
+                                font.pixelSize: 11
+                                font.bold: true
+                            }
+                        }
+
+                        Label {
+                            Layout.fillWidth: true
+                            text: modelData.name
+                            color: "#FFFFFF"
+                            font.pixelSize: 14
+                            font.bold: true
+                            elide: Text.ElideRight
+                            verticalAlignment: Text.AlignVCenter
+                        }
+
+                        Label {
+                            text: modelData.album.length > 0
+                                ? "Álbum: " + modelData.album
+                                : "Álbum não informado"
+                            color: "#A0A4B8"
+                            font.pixelSize: 12
+                            elide: Text.ElideRight
+                            verticalAlignment: Text.AlignVCenter
+                        }
+
+                        Button {
+                            id: loadButton
+                            text: "Carregar"
+                            onClicked: louvorjaSearchDialog.loadLouvorjaSong(modelData.id)
+                            background: Rectangle {
+                                radius: 6
+                                color: loadButton.down ? "#1D4ED8" : "#2563EB"
+                            }
+                            contentItem: Text {
+                                text: loadButton.text
+                                color: "#FFFFFF"
+                                horizontalAlignment: Text.AlignHCenter
+                                verticalAlignment: Text.AlignVCenter
+                                font.pixelSize: 12
+                                font.bold: true
+                                elide: Text.ElideRight
+                            }
+                        }
+                    }
+                }
+            }
+        }
     }
 
     Shortcut {
@@ -174,7 +368,7 @@ ApplicationWindow {
                     TextField {
                         id: urlField
                         Layout.fillWidth: true
-                        placeholderText: "Cole a URL do YouTube ou caminho local"
+                        placeholderText: "Cole a URL do YouTube ou digite o nome da música"
                         selectByMouse: true
                         onAccepted: operatorWindow.loadMusic()
                     }
@@ -183,6 +377,12 @@ ApplicationWindow {
                         text: "Carregar"
                         enabled: urlField.text.length > 0 && !appController.loading
                         onClicked: operatorWindow.loadMusic()
+                    }
+
+                    Button {
+                        text: "Buscar no LouvorJA"
+                        enabled: urlField.text.length > 0 && !appController.loading
+                        onClicked: appController.search_louvorja(urlField.text)
                     }
 
                     Button {
