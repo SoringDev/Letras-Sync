@@ -6,6 +6,10 @@ fn default_volume() -> u32 {
     100
 }
 
+fn default_autoplay() -> bool {
+    false
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Settings {
     pub font_size: u32,
@@ -18,6 +22,8 @@ pub struct Settings {
     pub projection: ProjectionConfig,
     #[serde(default = "default_volume")]
     pub volume: u32,
+    #[serde(default = "default_autoplay")]
+    pub autoplay: bool,
 }
 
 impl Default for Settings {
@@ -31,6 +37,7 @@ impl Default for Settings {
             cache_path: String::new(),
             projection: ProjectionConfig::default(),
             volume: default_volume(),
+            autoplay: default_autoplay(),
         }
     }
 }
@@ -50,6 +57,7 @@ mod tests {
             cache_path: "/tmp/cache".to_string(),
             projection: ProjectionConfig::default(),
             volume: 73,
+            autoplay: false,
         };
 
         let encoded = toml::to_string(&settings).expect("serializar settings");

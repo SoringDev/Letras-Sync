@@ -6,6 +6,9 @@ use serde::{Deserialize, Serialize};
 
 use crate::domain::lyrics::LyricsLine;
 
+const LOUVORJA_TIMEOUT_SECS: u64 = 30;
+const LOUVORJA_MAX_RETRIES: u32 = 3;
+
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct CatalogEntry {
     pub id: String,
@@ -75,7 +78,7 @@ impl LouvorJaProvider {
         cache_path: &Path,
     ) -> Result<Vec<CatalogEntry>> {
         let client = reqwest::Client::builder()
-            .timeout(Duration::from_secs(10))
+            .timeout(Duration::from_secs(LOUVORJA_TIMEOUT_SECS))
             .build()?;
         let catalog = load_or_fetch_catalog(&client, cache_path).await?;
         let q = normalize(query);
@@ -104,19 +107,11 @@ impl LouvorJaProvider {
         music_id: &str,
     ) -> Result<Option<LouvorJaDetailResult>> {
         let client = reqwest::Client::builder()
-            .timeout(Duration::from_secs(10))
+            .timeout(Duration::from_secs(LOUVORJA_TIMEOUT_SECS))
             .build()?;
         let detail_url = format!("https://api.louvorja.com.br/pt/musics/{louvorja_id}");
-        let detail: MusicResponse = client
-            .get(&detail_url)
-            .send()
-            .await
-            .context("falha ao consultar o detalhe do LouvorJA")?
-            .error_for_status()
-            .context("LouvorJA retornou erro no detalhe")?
-            .json()
-            .await
-            .context("falha ao desserializar o detalhe do LouvorJA")?;
+        tracing::info!("louvorja: buscando detalhes de id={louvorja_id} ...");
+        let detail: MusicResponse = louvorja_get_json(&client, &detail_url).await?;
 
         let Some(lyrics) = detail.data.lyric else {
             return Ok(None);
@@ -127,13 +122,22 @@ impl LouvorJaProvider {
             return Ok(None);
         }
 
+        tracing::info!(
+            "louvorja: detalhe de id={louvorja_id} obtido com sucesso ({} linhas)",
+            lines.len()
+        );
+
         Ok(Some(LouvorJaDetailResult {
             id: louvorja_id.to_string(),
             title: detail
                 .data
                 .name
                 .unwrap_or_else(|| format!("LouvorJA #{louvorja_id}")),
-            album: detail.data.url_music.as_deref().and_then(extract_album_from_url),
+            album: detail
+                .data
+                .url_music
+                .as_deref()
+                .and_then(extract_album_from_url),
             audio_url: detail
                 .data
                 .url_music
@@ -155,7 +159,7 @@ impl LouvorJaProvider {
         }
 
         let client = reqwest::Client::builder()
-            .timeout(Duration::from_secs(10))
+            .timeout(Duration::from_secs(LOUVORJA_TIMEOUT_SECS))
             .build()?;
 
         let catalog = load_or_fetch_catalog(&client, cache_path).await?;
@@ -202,6 +206,53 @@ impl LouvorJaProvider {
             Ok(Some(lines))
         }
     }
+}
+
+async fn louvorja_get_json<T>(client: &reqwest::Client, url: &str) -> Result<T>
+where
+    T: serde::de::DeserializeOwned,
+{
+    let mut last_err = anyhow::anyhow!("nenhuma tentativa realizada");
+    for attempt in 1..=LOUVORJA_MAX_RETRIES {
+        match client.get(url).send().await {
+            Ok(resp) => match resp.error_for_status() {
+                Ok(ok_resp) => match ok_resp.json::<T>().await {
+                    Ok(data) => return Ok(data),
+                    Err(e) => {
+                        last_err = e.into();
+                        tracing::warn!(
+                            "louvorja: falha ao desserializar resposta (tentativa {attempt}/{LOUVORJA_MAX_RETRIES}): {last_err}"
+                        );
+                    }
+                },
+                Err(e) => {
+                    last_err = e.into();
+                    tracing::warn!(
+                        "louvorja: erro HTTP (tentativa {attempt}/{LOUVORJA_MAX_RETRIES}): {last_err}"
+                    );
+                }
+            },
+            Err(e) => {
+                last_err = e.into();
+                tracing::warn!(
+                    "louvorja: timeout/erro de rede para {url} (tentativa {attempt}/{LOUVORJA_MAX_RETRIES}): {last_err}"
+                );
+            }
+        }
+
+        if attempt < LOUVORJA_MAX_RETRIES {
+            let delay = Duration::from_secs(2u64.pow(attempt - 1));
+            tracing::info!(
+                "louvorja: aguardando {}s antes da próxima tentativa...",
+                delay.as_secs()
+            );
+            tokio::time::sleep(delay).await;
+        }
+    }
+
+    Err(last_err.context(format!(
+        "louvorja: falha após {LOUVORJA_MAX_RETRIES} tentativas para {url}"
+    )))
 }
 
 async fn download_official_audio(
@@ -283,7 +334,9 @@ async fn load_or_fetch_catalog(
         }
     }
 
-    tracing::info!("louvorja: baixando catálogo completo...");
+    tracing::info!(
+        "louvorja: iniciando paginação do catálogo (pode demorar em conexões lentas)..."
+    );
 
     let mut all_entries: Vec<CatalogEntry> = Vec::new();
     let mut page = 1u32;
@@ -302,6 +355,9 @@ async fn load_or_fetch_catalog(
             .await
             .context("louvorja: falha ao desserializar página do catálogo")?;
 
+        let last_page = response.last_page.unwrap_or(1);
+        tracing::info!("louvorja: baixando página {page}/{last_page}...");
+
         for item in response.data {
             let id = item.id_music.into_string();
             let name = item.name.trim().to_string();
@@ -316,7 +372,6 @@ async fn load_or_fetch_catalog(
             }
         }
 
-        let last_page = response.last_page.unwrap_or(1);
         if page >= last_page {
             break;
         }
@@ -367,11 +422,11 @@ fn extract_album_from_url(url: &str) -> Option<String> {
         if b == b'%' {
             let h1 = chars.next();
             let h2 = chars.next();
-            if let (Some(h1), Some(h2)) = (h1, h2) {
-                if let Ok(val) = u8::from_str_radix(&format!("{}{}", h1 as char, h2 as char), 16) {
-                    bytes.push(val);
-                    continue;
-                }
+            if let (Some(h1), Some(h2)) = (h1, h2)
+                && let Ok(val) = u8::from_str_radix(&format!("{}{}", h1 as char, h2 as char), 16)
+            {
+                bytes.push(val);
+                continue;
             }
         }
         bytes.push(b);
@@ -636,7 +691,8 @@ mod tests {
 
     #[test]
     fn extract_album_from_music_url() {
-        let url = "https://api.louvorja.com.br/file/musics/pt/1992 - Brilha Jesus/Nosso Sol É Jesus.mp3";
+        let url =
+            "https://api.louvorja.com.br/file/musics/pt/1992 - Brilha Jesus/Nosso Sol É Jesus.mp3";
 
         assert_eq!(
             extract_album_from_url(url).as_deref(),

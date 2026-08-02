@@ -119,6 +119,7 @@ mod tests {
             cache_path: "/tmp/custom-cache".to_string(),
             projection: crate::domain::projection_config::ProjectionConfig::default(),
             volume: 80,
+            autoplay: true,
         };
 
         write_settings(&path, &settings).expect("gravar configurações");

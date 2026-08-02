@@ -15,7 +15,7 @@ use crate::infrastructure::providers::louvorja::LouvorJaProvider;
 use crate::infrastructure::youtube::YoutubeService;
 use crate::shared::utils::{extract_video_id, normalize_youtube_url};
 
-use super::lyrics_service::LyricsService;
+use super::lyrics_service::{DebugLyricsProvider, LyricsService};
 
 /// Intervalo do loop de polling em segundo plano.
 const POLL_INTERVAL: Duration = Duration::from_millis(50);
@@ -245,15 +245,16 @@ impl Player {
         self.event_tx.subscribe()
     }
 
-    /// Carrega uma mídia local ou do YouTube e inicia a reprodução.
-    pub async fn load_youtube(&self, url: &str) -> Result<()> {
-        self.load_media(url).await
-    }
-
-    /// Carrega uma mídia local ou remota e inicia a reprodução.
-    pub async fn load_media(&self, input: &str) -> Result<()> {
+    /// Carrega uma mídia local ou remota usando um provider de letras forçado.
+    pub async fn load_media_with_provider(
+        &self,
+        input: &str,
+        forced_provider: Option<DebugLyricsProvider>,
+    ) -> Result<()> {
         if let Some(local_path) = resolve_local_media_path(input).await? {
-            return self.load_local_media(&local_path).await;
+            return self
+                .load_local_media_with_provider(&local_path, forced_provider)
+                .await;
         }
 
         if let Some(louvorja_id) = extract_louvorja_id(input) {
@@ -263,7 +264,7 @@ impl Player {
         let normalized =
             crate::shared::utils::normalize_youtube_url(input).unwrap_or_else(|| input.to_string());
 
-        self.load_remote_youtube(&normalized).await
+        self.load_remote_youtube(&normalized, forced_provider).await
     }
 
     pub async fn load_louvorja_song(&self, louvorja_id: &str) -> Result<()> {
@@ -341,6 +342,8 @@ impl Player {
             });
             self.emit(PlayerEvent::StateChanged(PlaybackState::Paused));
 
+            self.apply_autoplay_if_enabled().await.ok();
+
             Ok::<(), anyhow::Error>(())
         }
         .await;
@@ -352,7 +355,11 @@ impl Player {
         result
     }
 
-    async fn load_remote_youtube(&self, url: &str) -> Result<()> {
+    async fn load_remote_youtube(
+        &self,
+        url: &str,
+        forced_provider: Option<DebugLyricsProvider>,
+    ) -> Result<()> {
         let canonical_url = normalize_youtube_url(url)
             .ok_or_else(|| anyhow::anyhow!("não foi possível extrair o video_id da URL: {url}"))?;
         let video_id = extract_video_id(&canonical_url)
@@ -371,9 +378,15 @@ impl Player {
         ));
         let lyrics_service = self.lyrics_service.clone();
         let mut lyrics = lyrics_service
-            .get_lyrics(&music_id, &canonical_url, None, &|status| {
-                self.emit(PlayerEvent::LoadingStatus(status.to_string()));
-            })
+            .get_lyrics(
+                &music_id,
+                &canonical_url,
+                None,
+                forced_provider,
+                &|status| {
+                    self.emit(PlayerEvent::LoadingStatus(status.to_string()));
+                },
+            )
             .await
             .unwrap_or_else(|e| {
                 tracing::warn!("falha ao obter as letras da música {video_id}: {e}");
@@ -382,23 +395,34 @@ impl Player {
 
         let local_path = if !lyrics.is_empty() {
             self.ensure_cached_audio(&canonical_url, &video_id).await?
-        } else {
+        } else if forced_provider == Some(DebugLyricsProvider::Whisper) || forced_provider.is_none()
+        {
             let local_path = self.ensure_cached_audio(&canonical_url, &video_id).await?;
 
-            self.emit(PlayerEvent::LoadingStatus(
-                "Buscando legendas sincronizadas...".to_string(),
-            ));
-            lyrics = lyrics_service
-                .get_lyrics(&music_id, &canonical_url, Some(&local_path), &|status| {
-                    self.emit(PlayerEvent::LoadingStatus(status.to_string()));
-                })
-                .await
-                .unwrap_or_else(|e| {
-                    tracing::warn!("falha ao obter as letras da música {video_id}: {e}");
-                    Vec::new()
-                });
+            if forced_provider.is_none() || forced_provider == Some(DebugLyricsProvider::Whisper) {
+                self.emit(PlayerEvent::LoadingStatus(
+                    "Buscando legendas sincronizadas...".to_string(),
+                ));
+                lyrics = lyrics_service
+                    .get_lyrics(
+                        &music_id,
+                        &canonical_url,
+                        Some(&local_path),
+                        forced_provider,
+                        &|status| {
+                            self.emit(PlayerEvent::LoadingStatus(status.to_string()));
+                        },
+                    )
+                    .await
+                    .unwrap_or_else(|e| {
+                        tracing::warn!("falha ao obter as letras da música {video_id}: {e}");
+                        Vec::new()
+                    });
+            }
 
             local_path
+        } else {
+            self.ensure_cached_audio(&canonical_url, &video_id).await?
         };
 
         self.audio_engine.load(&local_path.to_string_lossy())?;
@@ -414,10 +438,16 @@ impl Player {
         self.emit(PlayerEvent::MusicLoaded { music, lyrics });
         self.emit(PlayerEvent::StateChanged(PlaybackState::Paused));
 
+        self.apply_autoplay_if_enabled().await.ok();
+
         Ok(())
     }
 
-    async fn load_local_media(&self, local_path: &Path) -> Result<()> {
+    async fn load_local_media_with_provider(
+        &self,
+        local_path: &Path,
+        forced_provider: Option<DebugLyricsProvider>,
+    ) -> Result<()> {
         let music = self.resolve_local_music(local_path).await?;
         let music_id = music.id.clone();
         let canonical_path = PathBuf::from(&music.youtube_url);
@@ -427,24 +457,53 @@ impl Player {
         self.emit(PlayerEvent::LoadingStatus(
             "Buscando letras do arquivo local...".to_string(),
         ));
-        let lyrics_service = self.lyrics_service.clone();
-        let lyrics = lyrics_service
-            .get_lyrics(
-                &music_id,
-                &music.youtube_url,
-                Some(&canonical_path),
-                &|status| {
-                    self.emit(PlayerEvent::LoadingStatus(status.to_string()));
-                },
-            )
-            .await
-            .unwrap_or_else(|e| {
-                tracing::warn!(
-                    "falha ao obter as letras do arquivo local {}: {e}",
-                    canonical_path.display()
-                );
-                Vec::new()
-            });
+        let lyrics = if forced_provider.is_none() {
+            let lyrics_repo = LyricsRepository::new(&self.pool);
+            match lyrics_repo.find_by_music_id(&music_id).await {
+                Ok(saved_lyrics) if !saved_lyrics.is_empty() => saved_lyrics,
+                _ => {
+                    let lyrics_service = self.lyrics_service.clone();
+                    lyrics_service
+                        .get_lyrics(
+                            &music_id,
+                            &music.youtube_url,
+                            Some(&canonical_path),
+                            forced_provider,
+                            &|status| {
+                                self.emit(PlayerEvent::LoadingStatus(status.to_string()));
+                            },
+                        )
+                        .await
+                        .unwrap_or_else(|e| {
+                            tracing::warn!(
+                                "falha ao obter as letras do arquivo local {}: {e}",
+                                canonical_path.display()
+                            );
+                            Vec::new()
+                        })
+                }
+            }
+        } else {
+            let lyrics_service = self.lyrics_service.clone();
+            lyrics_service
+                .get_lyrics(
+                    &music_id,
+                    &music.youtube_url,
+                    Some(&canonical_path),
+                    forced_provider,
+                    &|status| {
+                        self.emit(PlayerEvent::LoadingStatus(status.to_string()));
+                    },
+                )
+                .await
+                .unwrap_or_else(|e| {
+                    tracing::warn!(
+                        "falha ao obter as letras do arquivo local {}: {e}",
+                        canonical_path.display()
+                    );
+                    Vec::new()
+                })
+        };
 
         self.audio_engine.load(&canonical_path.to_string_lossy())?;
         self.audio_engine.pause()?;
@@ -459,6 +518,16 @@ impl Player {
         self.emit(PlayerEvent::MusicLoaded { music, lyrics });
         self.emit(PlayerEvent::StateChanged(PlaybackState::Paused));
 
+        self.apply_autoplay_if_enabled().await.ok();
+
+        Ok(())
+    }
+
+    async fn apply_autoplay_if_enabled(&self) -> Result<()> {
+        let settings = crate::shared::config::load_settings()?;
+        if settings.autoplay {
+            self.play().await?;
+        }
         Ok(())
     }
 
@@ -903,8 +972,7 @@ mod tests {
     #[test]
     fn extract_louvorja_id_from_url_input() {
         assert_eq!(
-            extract_louvorja_id("https://api.louvorja.com.br/pt/musics/1770")
-                .as_deref(),
+            extract_louvorja_id("https://api.louvorja.com.br/pt/musics/1770").as_deref(),
             Some("1770")
         );
     }
@@ -1263,7 +1331,12 @@ mod tests {
             return;
         };
 
-        assert!(player.load_youtube("not-a-url").await.is_err());
+        assert!(
+            player
+                .load_media_with_provider("not-a-url", None)
+                .await
+                .is_err()
+        );
     }
 
     #[tokio::test]
@@ -1310,7 +1383,10 @@ mod tests {
             .await
             .expect("seed local lyrics");
 
-        player.load_youtube(&uri).await.expect("load local file");
+        player
+            .load_media_with_provider(&uri, None)
+            .await
+            .expect("load local file");
 
         let repository = MusicRepository::new(&pool);
         let stored = repository

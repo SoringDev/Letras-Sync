@@ -1,5 +1,6 @@
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result, bail};
 use serde::Deserialize;
@@ -7,6 +8,9 @@ use tokio::process::Command;
 
 use crate::domain::music::Music;
 use crate::shared::utils::normalize_youtube_url;
+
+/// Idiomas aceitos para legendas automáticas do YouTube.
+const YOUTUBE_SUBTITLE_LANGS: &str = "pt,pt-BR";
 
 #[derive(Debug, Deserialize)]
 struct YtDlpMetadata {
@@ -101,14 +105,14 @@ impl YoutubeService {
 
     pub async fn fetch_captions(&self, video_id: &str) -> Result<Option<String>> {
         let temp_dir = std::env::temp_dir();
-        let output_template = temp_dir.join(video_id);
+        let output_template = temp_dir.join(unique_temp_prefix(video_id));
 
-        let status = yt_dlp_command()
+        let output = yt_dlp_command()
             .args([
                 "--write-auto-subs",
                 "--write-subs",
                 "--sub-langs",
-                "pt,pt-BR,en",
+                YOUTUBE_SUBTITLE_LANGS,
                 "--sub-format",
                 "vtt",
                 "--skip-download",
@@ -117,13 +121,19 @@ impl YoutubeService {
             ])
             .arg(&output_template)
             .arg(format!("https://www.youtube.com/watch?v={video_id}"))
-            .status()
+            .output()
             .await
             .context("failed to execute yt-dlp (is it installed and in PATH?)")?;
 
-        if !status.success() {
+        if !output.status.success() {
             return Ok(None);
         }
+
+        let prefix = output_template
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or(video_id)
+            .to_string();
 
         let mut entries = tokio::fs::read_dir(&temp_dir)
             .await
@@ -137,7 +147,7 @@ impl YoutubeService {
         {
             let path = entry.path();
             if let Some(name) = path.file_name().and_then(|n| n.to_str())
-                && name.starts_with(video_id)
+                && name.starts_with(&prefix)
                 && name.ends_with(".vtt")
             {
                 vtt_files.push(path);
@@ -159,6 +169,14 @@ impl YoutubeService {
             Err(_) => Ok(None),
         }
     }
+}
+
+fn unique_temp_prefix(video_id: &str) -> String {
+    let unique = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    format!("letras_sync_youtube_{video_id}_{unique}")
 }
 
 fn audio_download_args(url: &str, output_template: &Path) -> Vec<OsString> {
@@ -245,5 +263,23 @@ mod tests {
             assert!(debug.contains("--js-runtimes"));
             assert!(debug.contains("node"));
         }
+    }
+
+    #[test]
+    fn fetch_captions_is_pinned_to_portuguese_languages() {
+        assert_eq!(YOUTUBE_SUBTITLE_LANGS, "pt,pt-BR");
+    }
+
+    #[tokio::test]
+    async fn fetch_captions_returns_none_when_subtitles_fail() {
+        if !yt_dlp_available().await {
+            return;
+        }
+
+        let service = YoutubeService::new();
+        let result = service.fetch_captions("INVALID_ID1").await;
+
+        assert!(result.is_ok());
+        assert!(result.unwrap().is_none());
     }
 }

@@ -35,7 +35,7 @@ def main():
     output_path = sys.argv[2]
 
     model = WhisperModel("small", device="cpu", compute_type="int8")
-    segments, _ = model.transcribe(audio_path, language="pt")
+    segments, _ = model.transcribe(audio_path, language="pt", task="transcribe")
 
     with open(output_path, "w", encoding="utf-8") as handle:
         handle.write("WEBVTT\n\n")
@@ -157,6 +157,9 @@ impl Default for WhisperService {
 mod tests {
     use super::*;
 
+    /// Idioma fixo usado pela transcrição via Whisper.
+    const WHISPER_LANGUAGE: &str = "pt";
+
     /// Verifica se o ambiente possui `python3` com o pacote `faster_whisper`.
     /// Retorna `false` quando qualquer um estiver ausente, permitindo o
     /// encerramento gracioso dos testes em ambientes headless/CI.
@@ -196,12 +199,14 @@ mod tests {
     #[test]
     fn transcribe_script_is_pinned_to_portuguese() {
         assert!(TRANSCRIBE_SCRIPT.contains(r#"language="pt""#));
+        assert!(TRANSCRIBE_SCRIPT.contains(r#"task="transcribe""#));
+        assert_eq!(WHISPER_LANGUAGE, "pt");
     }
 
-    /// Escreve um WAV PCM de 1 segundo em silêncio para servir de entrada.
+    /// Escreve um WAV PCM de 3 segundos em silêncio para servir de entrada.
     async fn write_silent_wav(path: &Path) -> std::io::Result<()> {
         let sample_rate: u32 = 16000;
-        let num_samples: u32 = sample_rate;
+        let num_samples: u32 = sample_rate * 3;
         let data_len = num_samples * 2;
         let file_len = 36 + data_len;
 

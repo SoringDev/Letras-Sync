@@ -7,6 +7,7 @@ use sqlx::sqlite::SqlitePool;
 use tokio::fs;
 use tokio::sync::broadcast;
 
+use crate::application::lyrics_service::DebugLyricsProvider;
 use crate::application::player::{PlaybackState, Player, PlayerEvent};
 use crate::application::playlist::Playlist;
 use crate::application::timeline::{Timeline, TimelineEvent};
@@ -20,7 +21,12 @@ use crate::infrastructure::providers::{
 
 qrc!(register_qml_resources,
     "letras_sync/presentation" {
+        "src/presentation/AppButton.qml" as "AppButton.qml",
+        "src/presentation/Divider.qml" as "Divider.qml",
+        "src/presentation/Eyebrow.qml" as "Eyebrow.qml",
+        "src/presentation/IconButton.qml" as "IconButton.qml",
         "src/presentation/operator.qml" as "operator.qml",
+        "src/presentation/Pill.qml" as "Pill.qml",
         "src/presentation/projection.qml" as "projection.qml",
     },
 );
@@ -42,7 +48,20 @@ fn playback_state_label(state: PlaybackState) -> &'static str {
 }
 
 fn can_seek(duration: f64, seconds: f64) -> bool {
-    duration > 0.0 && seconds.is_finite() && seconds >= 0.0
+    duration.is_finite()
+        && duration > 0.0
+        && seconds.is_finite()
+        && seconds >= 0.0
+        && seconds <= duration
+}
+
+fn clamp_seek_seconds(duration: f64, seconds: f64) -> Option<f64> {
+    if !can_seek(duration, seconds) {
+        return None;
+    }
+
+    let upper_bound = (duration - 0.01).max(0.0);
+    Some(seconds.min(upper_bound))
 }
 
 fn is_web_or_file_url(input: &str) -> bool {
@@ -63,6 +82,16 @@ fn qml_path_to_pathbuf(file_path: &str) -> std::path::PathBuf {
 fn trim_lyric_line_text(text: &str) -> String {
     text.trim_end_matches(|c: char| !c.is_alphanumeric())
         .to_string()
+}
+
+fn parse_debug_lyrics_provider(value: &str) -> Option<DebugLyricsProvider> {
+    match value.trim().to_lowercase().as_str() {
+        "lrclib" => Some(DebugLyricsProvider::Lrclib),
+        "youtube" => Some(DebugLyricsProvider::Youtube),
+        "netease" => Some(DebugLyricsProvider::Netease),
+        "whisper" => Some(DebugLyricsProvider::Whisper),
+        _ => None,
+    }
 }
 
 /// Controlador central que faz a ponte entre o QML e os serviços do backend.
@@ -90,6 +119,8 @@ pub struct AppController {
     volume: qt_property!(i32; NOTIFY volume_changed),
     volume_changed: qt_signal!(),
 
+    autoplay: qt_property!(bool; NOTIFY style_changed),
+
     music_title: qt_property!(QString; NOTIFY music_title_changed),
     music_title_changed: qt_signal!(),
 
@@ -116,6 +147,9 @@ pub struct AppController {
 
     loading_status: qt_property!(QString; NOTIFY loading_status_changed),
     loading_status_changed: qt_signal!(),
+
+    debug_lyrics_provider_override: qt_property!(QString; NOTIFY debug_lyrics_provider_override_changed),
+    debug_lyrics_provider_override_changed: qt_signal!(),
 
     current_lyrics: qt_property!(QVariantList; NOTIFY current_lyrics_changed),
     current_lyrics_changed: qt_signal!(),
@@ -484,9 +518,9 @@ pub struct AppController {
 
     seek: qt_method!(
         fn seek(&self, seconds: f64) {
-            if !can_seek(self.duration, seconds) {
+            let Some(seconds) = clamp_seek_seconds(self.duration, seconds) else {
                 return;
-            }
+            };
 
             let Some(player) = self.player.clone() else {
                 return;
@@ -527,6 +561,17 @@ pub struct AppController {
                     }
                 });
             }
+        }
+    ),
+
+    set_autoplay: qt_method!(
+        fn set_autoplay(&mut self, enabled: bool) {
+            self.autoplay = enabled;
+            self.settings.autoplay = enabled;
+            if let Err(err) = crate::shared::config::save_settings(&self.settings) {
+                tracing::warn!("falha ao salvar configuração de autoplay: {err}");
+            }
+            self.style_changed();
         }
     ),
 
@@ -1042,6 +1087,14 @@ pub struct AppController {
         }
     ),
 
+    set_debug_lyrics_provider_override: qt_method!(
+        fn set_debug_lyrics_provider_override(&mut self, value: QString) {
+            let value = value.to_string().trim().to_lowercase();
+            self.debug_lyrics_provider_override = QString::from(value.as_str());
+            self.debug_lyrics_provider_override_changed();
+        }
+    ),
+
     player: Option<Arc<Player>>,
     timeline: Option<Arc<Timeline>>,
     playlist_handle: Option<Arc<Playlist>>,
@@ -1063,6 +1116,7 @@ impl AppController {
         controller.playback_state = QString::from(playback_state_label(PlaybackState::Idle));
         controller.sync_offset = 0.0;
         controller.volume = settings.volume as i32;
+        controller.autoplay = settings.autoplay;
         controller.font_size = settings.font_size;
         controller.font_family = QString::from(settings.font_family.as_str());
         controller.font_color = QString::from(settings.font_color.as_str());
@@ -1096,6 +1150,7 @@ impl AppController {
         controller.clear_screen = false;
         controller.next_lyric_text = QString::default();
         controller.history_search_query = QString::default();
+        controller.debug_lyrics_provider_override = QString::default();
         controller.player = Some(player);
         controller.timeline = Some(timeline);
         controller.playlist_handle = Some(playlist);
@@ -1137,6 +1192,8 @@ impl AppController {
         let Some(player) = self.player.clone() else {
             return;
         };
+        let forced_provider =
+            parse_debug_lyrics_provider(&self.debug_lyrics_provider_override.to_string());
         self.error_message = QString::default();
         self.error_message_changed();
         self.loading_status = QString::default();
@@ -1163,7 +1220,7 @@ impl AppController {
         });
 
         tokio::spawn(async move {
-            match player.load_youtube(&url).await {
+            match player.load_media_with_provider(&url, forced_provider).await {
                 Ok(()) => refresh(()),
                 Err(err) => {
                     tracing::error!("falha ao carregar a música {url}: {err:?}");
@@ -1506,8 +1563,16 @@ mod tests {
         assert!(!can_seek(-1.0, 10.0));
         assert!(!can_seek(120.0, f64::NAN));
         assert!(!can_seek(120.0, -1.0));
+        assert!(!can_seek(120.0, 120.1));
         assert!(can_seek(120.0, 0.0));
         assert!(can_seek(120.0, 119.5));
+    }
+
+    #[test]
+    fn clamp_seek_seconds_keeps_position_inside_duration() {
+        assert_eq!(clamp_seek_seconds(120.0, 121.0), None);
+        assert_eq!(clamp_seek_seconds(120.0, 120.0), Some(119.99));
+        assert_eq!(clamp_seek_seconds(120.0, 30.0), Some(30.0));
     }
 
     #[test]
@@ -1517,5 +1582,26 @@ mod tests {
             "Linha final".to_string()
         );
         assert_eq!(trim_lyric_line_text("Verso 2...??"), "Verso 2".to_string());
+    }
+
+    #[test]
+    fn parse_debug_lyrics_provider_maps_known_values() {
+        assert_eq!(
+            parse_debug_lyrics_provider("lrclib"),
+            Some(DebugLyricsProvider::Lrclib)
+        );
+        assert_eq!(
+            parse_debug_lyrics_provider("youtube"),
+            Some(DebugLyricsProvider::Youtube)
+        );
+        assert_eq!(
+            parse_debug_lyrics_provider("netease"),
+            Some(DebugLyricsProvider::Netease)
+        );
+        assert_eq!(
+            parse_debug_lyrics_provider("whisper"),
+            Some(DebugLyricsProvider::Whisper)
+        );
+        assert_eq!(parse_debug_lyrics_provider("invalid"), None);
     }
 }

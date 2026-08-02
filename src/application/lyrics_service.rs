@@ -4,6 +4,7 @@ use std::time::Duration;
 
 use anyhow::Result;
 use serde::Deserialize;
+use whatlang::{Lang, detect};
 
 use crate::domain::lyrics::LyricsLine;
 use crate::infrastructure::lyrics_repository::LyricsRepository;
@@ -17,6 +18,15 @@ use crate::shared::utils::{extract_song_title_candidates, extract_video_id};
 
 use sqlx::sqlite::SqlitePool;
 
+/// Provider de letras forçado pela UI de depuração.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DebugLyricsProvider {
+    Lrclib,
+    Youtube,
+    Netease,
+    Whisper,
+}
+
 /// Resultado individual retornado pela busca do LRCLib.
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -25,7 +35,8 @@ struct LrclibResult {
 }
 
 /// Orquestra os providers de letras seguindo a cadeia de prioridade:
-/// cache local → legendas do YouTube (VTT) → LRCLib (LRC) → fallback (stub).
+/// cache local → LRCLib (LRC) → legendas do YouTube (VTT) →
+/// NetEase/LouvorJA → Whisper.
 pub struct LyricsService {
     pool: SqlitePool,
     youtube: Arc<YoutubeService>,
@@ -57,18 +68,59 @@ impl LyricsService {
         music_id: &str,
         youtube_url: &str,
         audio_path: Option<&std::path::Path>,
+        forced_provider: Option<DebugLyricsProvider>,
         on_status: &(dyn Fn(&str) + Send + Sync),
     ) -> Result<Vec<LyricsLine>> {
         let repository = LyricsRepository::new(&self.pool);
 
+        if let Some(provider) = forced_provider {
+            return self
+                .get_forced_lyrics(
+                    &repository,
+                    music_id,
+                    youtube_url,
+                    audio_path,
+                    provider,
+                    on_status,
+                )
+                .await;
+        }
+
         // 1. Cache local.
         match repository.find_by_music_id(music_id).await {
-            Ok(lines) if !lines.is_empty() => return Ok(lines),
+            Ok(lines) if !lines.is_empty() => {
+                if lyrics_look_like_portuguese(&lines) {
+                    return Ok(lines);
+                }
+
+                tracing::warn!(
+                    "cache de letras em idioma não suportado para {music_id}; limpando cache"
+                );
+                if let Err(e) = repository.delete_by_music_id(music_id).await {
+                    tracing::warn!("falha ao limpar cache de letras inválidas: {e}");
+                }
+            }
             Ok(_) => {}
             Err(e) => tracing::warn!("falha ao consultar o cache de letras: {e}"),
         }
 
-        // 2. Legendas do YouTube (VTT).
+        // 2. LRCLib (o music_id é usado como termo de busca).
+        match self.fetch_from_lrclib(music_id).await {
+            Ok(Some(lrc_content)) => {
+                let lines = lrc_parser::parse(&lrc_content, music_id);
+                if !lines.is_empty()
+                    && let Some(lines) = self
+                        .accept_portuguese_lyrics(&repository, music_id, "LRCLib", lines)
+                        .await
+                {
+                    return Ok(lines);
+                }
+            }
+            Ok(None) => {}
+            Err(e) => tracing::warn!("falha ao consultar o LRCLib: {e}"),
+        }
+
+        // 3. Legendas do YouTube (VTT).
         if let Some(video_id) = extract_video_id(youtube_url) {
             match self.youtube.fetch_captions(&video_id).await {
                 Ok(Some(vtt_content)) => {
@@ -77,8 +129,12 @@ impl LyricsService {
                     } else {
                         srt_parser::parse(&vtt_content, music_id)
                     };
-                    if !lines.is_empty() {
-                        return Ok(self.persist_and_reload(&repository, music_id, &lines).await);
+                    if !lines.is_empty()
+                        && let Some(lines) = self
+                            .accept_portuguese_lyrics(&repository, music_id, "YouTube", lines)
+                            .await
+                    {
+                        return Ok(lines);
                     }
                 }
                 Ok(None) => {}
@@ -88,7 +144,7 @@ impl LyricsService {
             tracing::warn!("não foi possível extrair o video_id da URL: {youtube_url}");
         }
 
-        // 3. LouvorJA + 4. NetEase — tenta cada candidato de título extraído do YouTube
+        // 4. LouvorJA + NetEase — tenta cada candidato de título extraído do YouTube.
         let raw_title = match MusicRepository::new(&self.pool)
             .find_by_youtube_url(youtube_url)
             .await
@@ -111,7 +167,12 @@ impl LyricsService {
                 .await
             {
                 Ok(Some(lines)) if !lines.is_empty() => {
-                    return Ok(self.persist_and_reload(&repository, music_id, &lines).await);
+                    if let Some(lines) = self
+                        .accept_portuguese_lyrics(&repository, music_id, "LouvorJA", lines)
+                        .await
+                    {
+                        return Ok(lines);
+                    }
                 }
                 Ok(_) => {}
                 Err(e) => tracing::warn!("falha ao consultar o LouvorJA com '{candidate}': {e}"),
@@ -119,31 +180,29 @@ impl LyricsService {
 
             match self.netease.fetch_synced_lyrics(candidate, music_id).await {
                 Ok(Some(lines)) if !lines.is_empty() => {
-                    return Ok(self.persist_and_reload(&repository, music_id, &lines).await);
+                    if let Some(lines) = self
+                        .accept_portuguese_lyrics(&repository, music_id, "NetEase", lines)
+                        .await
+                    {
+                        return Ok(lines);
+                    }
                 }
                 Ok(_) => {}
                 Err(e) => tracing::warn!("falha ao consultar o NetEase com '{candidate}': {e}"),
             }
         }
 
-        // 5. LRCLib (o music_id é usado como termo de busca).
-        match self.fetch_from_lrclib(music_id).await {
-            Ok(Some(lrc_content)) => {
-                let lines = lrc_parser::parse(&lrc_content, music_id);
-                if !lines.is_empty() {
-                    return Ok(self.persist_and_reload(&repository, music_id, &lines).await);
-                }
-            }
-            Ok(None) => {}
-            Err(e) => tracing::warn!("falha ao consultar o LRCLib: {e}"),
-        }
-
-        // 6. Fallback com IA (Whisper): transcreve o áudio local, se houver.
+        // 5. Fallback com IA (Whisper): transcreve o áudio local, se houver.
         if let Some(path) = audio_path {
             on_status("Gerando sincronização de letras via IA Whisper (isso pode demorar)...");
             match self.whisper.transcribe(path, music_id).await {
                 Ok(lines) if !lines.is_empty() => {
-                    return Ok(self.persist_and_reload(&repository, music_id, &lines).await);
+                    if let Some(lines) = self
+                        .accept_portuguese_lyrics(&repository, music_id, "Whisper", lines)
+                        .await
+                    {
+                        return Ok(lines);
+                    }
                 }
                 Ok(_) => {}
                 Err(e) => tracing::warn!("falha na transcrição do Whisper: {e}"),
@@ -184,6 +243,21 @@ impl LyricsService {
         }
     }
 
+    async fn accept_portuguese_lyrics(
+        &self,
+        repository: &LyricsRepository<'_>,
+        music_id: &str,
+        source: &str,
+        lines: Vec<LyricsLine>,
+    ) -> Option<Vec<LyricsLine>> {
+        if lyrics_look_like_portuguese(&lines) {
+            Some(self.persist_and_reload(repository, music_id, &lines).await)
+        } else {
+            tracing::warn!("{source} retornou letras fora de português; ignorando");
+            None
+        }
+    }
+
     async fn fetch_from_lrclib(&self, query: &str) -> Result<Option<String>> {
         let client = reqwest::Client::builder()
             .user_agent("LetrasSync/0.1.0 (https://github.com/SamuelPS/Letras-Sync)")
@@ -202,6 +276,160 @@ impl LyricsService {
             .into_iter()
             .find_map(|r| r.synced_lyrics.filter(|s| !s.is_empty())))
     }
+
+    async fn get_forced_lyrics(
+        &self,
+        repository: &LyricsRepository<'_>,
+        music_id: &str,
+        youtube_url: &str,
+        audio_path: Option<&std::path::Path>,
+        provider: DebugLyricsProvider,
+        on_status: &(dyn Fn(&str) + Send + Sync),
+    ) -> Result<Vec<LyricsLine>> {
+        match provider {
+            DebugLyricsProvider::Lrclib => {
+                on_status("Depuração: buscando apenas no LRCLib...");
+                if let Some(lrc_content) = self.fetch_from_lrclib(music_id).await? {
+                    let lines = lrc_parser::parse(&lrc_content, music_id);
+                    if let Some(lines) = self
+                        .accept_portuguese_lyrics(repository, music_id, "LRCLib", lines)
+                        .await
+                    {
+                        return Ok(lines);
+                    }
+                }
+            }
+            DebugLyricsProvider::Youtube => {
+                on_status("Depuração: buscando apenas no YouTube...");
+                if let Some(video_id) = extract_video_id(youtube_url)
+                    && let Ok(Some(vtt_content)) = self.youtube.fetch_captions(&video_id).await
+                {
+                    let lines = if vtt_content.trim_start().starts_with("WEBVTT") {
+                        vtt_parser::parse(&vtt_content, music_id)
+                    } else {
+                        srt_parser::parse(&vtt_content, music_id)
+                    };
+                    if let Some(lines) = self
+                        .accept_portuguese_lyrics(repository, music_id, "YouTube", lines)
+                        .await
+                    {
+                        return Ok(lines);
+                    }
+                }
+            }
+            DebugLyricsProvider::Netease => {
+                on_status("Depuração: buscando apenas no NetEase...");
+                let raw_title = match MusicRepository::new(&self.pool)
+                    .find_by_youtube_url(youtube_url)
+                    .await
+                {
+                    Ok(Some(music)) if !music.title.trim().is_empty() => music.title,
+                    Ok(_) => music_id.to_string(),
+                    Err(e) => {
+                        tracing::warn!("falha ao consultar a música para buscar no NetEase: {e}");
+                        music_id.to_string()
+                    }
+                };
+
+                for candidate in extract_song_title_candidates(&raw_title) {
+                    match self.netease.fetch_synced_lyrics(&candidate, music_id).await {
+                        Ok(Some(lines)) if !lines.is_empty() => {
+                            if let Some(lines) = self
+                                .accept_portuguese_lyrics(repository, music_id, "NetEase", lines)
+                                .await
+                            {
+                                return Ok(lines);
+                            }
+                        }
+                        Ok(_) => {}
+                        Err(e) => {
+                            tracing::warn!("falha ao consultar o NetEase com '{candidate}': {e}")
+                        }
+                    }
+                }
+            }
+            DebugLyricsProvider::Whisper => {
+                on_status("Depuração: buscando apenas no Whisper...");
+                if let Some(path) = audio_path {
+                    let lines = self.whisper.transcribe(path, music_id).await?;
+                    if let Some(lines) = self
+                        .accept_portuguese_lyrics(repository, music_id, "Whisper", lines)
+                        .await
+                    {
+                        return Ok(lines);
+                    }
+                }
+            }
+        }
+
+        Ok(Vec::new())
+    }
+}
+
+#[cfg(test)]
+fn lyrics_lookup_priority() -> [&'static str; 5] {
+    ["cache", "lrclib", "youtube", "louvorja_netease", "whisper"]
+}
+
+fn lyrics_look_like_portuguese(lines: &[LyricsLine]) -> bool {
+    let sample = lines
+        .iter()
+        .map(|line| line.text.trim())
+        .filter(|text| !text.is_empty())
+        .take(32)
+        .collect::<Vec<_>>()
+        .join(" ");
+
+    text_looks_like_portuguese(&sample)
+}
+
+fn text_looks_like_portuguese(text: &str) -> bool {
+    let normalized = text.trim();
+    if normalized.is_empty() {
+        return false;
+    }
+
+    if let Some(info) = detect(normalized)
+        && info.lang() == Lang::Por
+        && info.confidence() >= 0.60
+    {
+        return true;
+    }
+
+    let (portuguese_hits, spanish_hits) = score_portuguese_vs_spanish(normalized);
+    portuguese_hits >= 2 && portuguese_hits > spanish_hits
+}
+
+fn score_portuguese_vs_spanish(text: &str) -> (u32, u32) {
+    let mut portuguese_hits = 0;
+    let mut spanish_hits = 0;
+
+    for token in text
+        .to_lowercase()
+        .split(|c: char| !c.is_alphabetic())
+        .filter(|token| !token.is_empty())
+    {
+        match token {
+            "você" | "vocês" | "vc" | "cê" | "cês" | "pra" | "pro" | "pros" | "não" | "tá"
+            | "tô" | "tão" | "meu" | "minha" | "meus" | "minhas" | "nosso" | "nossa" | "vamos"
+            | "vamo" | "aí" | "já" | "depois" | "agora" | "hoje" | "amanhã" | "pode" | "quero"
+            | "querer" => portuguese_hits += 1,
+            "tú" | "tu" | "usted" | "ustedes" | "vos" | "pero" | "ahora" | "también" | "sólo"
+            | "solo" | "mi" | "cada" | "mañana" | "hoy" | "quiero" | "quieres" | "corazón"
+            | "mujer" | "chica" | "niña" => spanish_hits += 1,
+            _ => {}
+        }
+    }
+
+    if text.contains('ã') || text.contains('õ') {
+        portuguese_hits += 1;
+    }
+
+    if text.contains('ñ') {
+        spanish_hits += 1;
+    }
+
+    (portuguese_hits, spanish_hits)
 }
 
 #[cfg(test)]
@@ -265,5 +493,27 @@ mod tests {
         assert_ne!(saved[1].id, original[1].id);
         assert_eq!(saved[0].text, "primeira");
         assert_eq!(saved[1].text, "segunda");
+    }
+
+    #[test]
+    fn lyrics_lookup_priority_prefers_lrclib_before_youtube() {
+        assert_eq!(
+            lyrics_lookup_priority(),
+            ["cache", "lrclib", "youtube", "louvorja_netease", "whisper"]
+        );
+    }
+
+    #[test]
+    fn text_looks_like_portuguese_accepts_portuguese_lyrics() {
+        let text = "Você partiu meu coração\nMas meu amor não tem problema\nAgora eu posso te dar\nUm pedacinho de mim";
+
+        assert!(text_looks_like_portuguese(text));
+    }
+
+    #[test]
+    fn text_looks_like_portuguese_rejects_spanish_lyrics() {
+        let text = "Tú me partiste el corazón\nPero, mi amor, no hay problema\nAhora puedo regalar\nUn pedacito a cada nena";
+
+        assert!(!text_looks_like_portuguese(text));
     }
 }
