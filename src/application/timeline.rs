@@ -83,7 +83,7 @@ impl Timeline {
     /// Processa um evento recebido do player e atualiza o estado da timeline.
     async fn handle_player_event(&self, event: PlayerEvent) {
         match event {
-            PlayerEvent::MusicLoaded { music, lyrics } => {
+            PlayerEvent::MusicLoaded { music, lyrics, .. } => {
                 let mut state = self.state.write().await;
                 state.lyrics = lyrics;
                 state.active_line = None;

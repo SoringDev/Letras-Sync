@@ -15,7 +15,7 @@ use crate::infrastructure::providers::louvorja::LouvorJaProvider;
 use crate::infrastructure::youtube::YoutubeService;
 use crate::shared::utils::{extract_video_id, normalize_youtube_url};
 
-use super::lyrics_service::{DebugLyricsProvider, LyricsService};
+use super::lyrics_service::{DebugLyricsProvider, LyricsFetchResult, LyricsService};
 
 /// Intervalo do loop de polling em segundo plano.
 const POLL_INTERVAL: Duration = Duration::from_millis(50);
@@ -51,6 +51,7 @@ pub enum PlayerEvent {
     MusicLoaded {
         music: Music,
         lyrics: Vec<LyricsLine>,
+        lyrics_source: String,
     },
     LyricsUpdated(Vec<LyricsLine>),
     PositionUpdated {
@@ -339,6 +340,7 @@ impl Player {
             self.emit(PlayerEvent::MusicLoaded {
                 music,
                 lyrics: saved_lyrics,
+                lyrics_source: "LouvorJA".to_string(),
             });
             self.emit(PlayerEvent::StateChanged(PlaybackState::Paused));
 
@@ -377,7 +379,7 @@ impl Player {
             "Buscando legendas sincronizadas...".to_string(),
         ));
         let lyrics_service = self.lyrics_service.clone();
-        let mut lyrics = lyrics_service
+        let mut lyrics_result = lyrics_service
             .get_lyrics(
                 &music_id,
                 &canonical_url,
@@ -390,10 +392,13 @@ impl Player {
             .await
             .unwrap_or_else(|e| {
                 tracing::warn!("falha ao obter as letras da música {video_id}: {e}");
-                Vec::new()
+                LyricsFetchResult {
+                    lines: Vec::new(),
+                    source: None,
+                }
             });
 
-        let local_path = if !lyrics.is_empty() {
+        let local_path = if !lyrics_result.lines.is_empty() {
             self.ensure_cached_audio(&canonical_url, &video_id).await?
         } else if forced_provider == Some(DebugLyricsProvider::Whisper) || forced_provider.is_none()
         {
@@ -403,7 +408,7 @@ impl Player {
                 self.emit(PlayerEvent::LoadingStatus(
                     "Buscando legendas sincronizadas...".to_string(),
                 ));
-                lyrics = lyrics_service
+                lyrics_result = lyrics_service
                     .get_lyrics(
                         &music_id,
                         &canonical_url,
@@ -416,7 +421,10 @@ impl Player {
                     .await
                     .unwrap_or_else(|e| {
                         tracing::warn!("falha ao obter as letras da música {video_id}: {e}");
-                        Vec::new()
+                        LyricsFetchResult {
+                            lines: Vec::new(),
+                            source: None,
+                        }
                     });
             }
 
@@ -424,6 +432,9 @@ impl Player {
         } else {
             self.ensure_cached_audio(&canonical_url, &video_id).await?
         };
+
+        let lyrics = lyrics_result.lines;
+        let lyrics_source = lyrics_result.source.unwrap_or_default().to_string();
 
         self.audio_engine.load(&local_path.to_string_lossy())?;
         self.audio_engine.pause()?;
@@ -435,7 +446,11 @@ impl Player {
             state.status = PlaybackState::Paused;
         }
 
-        self.emit(PlayerEvent::MusicLoaded { music, lyrics });
+        self.emit(PlayerEvent::MusicLoaded {
+            music,
+            lyrics,
+            lyrics_source,
+        });
         self.emit(PlayerEvent::StateChanged(PlaybackState::Paused));
 
         self.apply_autoplay_if_enabled().await.ok();
@@ -457,10 +472,13 @@ impl Player {
         self.emit(PlayerEvent::LoadingStatus(
             "Buscando letras do arquivo local...".to_string(),
         ));
-        let lyrics = if forced_provider.is_none() {
+        let lyrics_result = if forced_provider.is_none() {
             let lyrics_repo = LyricsRepository::new(&self.pool);
             match lyrics_repo.find_by_music_id(&music_id).await {
-                Ok(saved_lyrics) if !saved_lyrics.is_empty() => saved_lyrics,
+                Ok(saved_lyrics) if !saved_lyrics.is_empty() => LyricsFetchResult {
+                    lines: saved_lyrics,
+                    source: Some("Cache"),
+                },
                 _ => {
                     let lyrics_service = self.lyrics_service.clone();
                     lyrics_service
@@ -479,7 +497,10 @@ impl Player {
                                 "falha ao obter as letras do arquivo local {}: {e}",
                                 canonical_path.display()
                             );
-                            Vec::new()
+                            LyricsFetchResult {
+                                lines: Vec::new(),
+                                source: None,
+                            }
                         })
                 }
             }
@@ -501,12 +522,18 @@ impl Player {
                         "falha ao obter as letras do arquivo local {}: {e}",
                         canonical_path.display()
                     );
-                    Vec::new()
+                    LyricsFetchResult {
+                        lines: Vec::new(),
+                        source: None,
+                    }
                 })
         };
 
         self.audio_engine.load(&canonical_path.to_string_lossy())?;
         self.audio_engine.pause()?;
+
+        let lyrics = lyrics_result.lines;
+        let lyrics_source = lyrics_result.source.unwrap_or_default().to_string();
 
         {
             let mut state = self.state.write().await;
@@ -515,7 +542,11 @@ impl Player {
             state.status = PlaybackState::Paused;
         }
 
-        self.emit(PlayerEvent::MusicLoaded { music, lyrics });
+        self.emit(PlayerEvent::MusicLoaded {
+            music,
+            lyrics,
+            lyrics_source,
+        });
         self.emit(PlayerEvent::StateChanged(PlaybackState::Paused));
 
         self.apply_autoplay_if_enabled().await.ok();
@@ -1043,6 +1074,7 @@ mod tests {
         let event = PlayerEvent::MusicLoaded {
             music,
             lyrics: lyrics.clone(),
+            lyrics_source: "Whisper".to_string(),
         };
 
         match event {

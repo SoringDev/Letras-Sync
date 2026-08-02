@@ -127,6 +127,9 @@ pub struct AppController {
     music_artist: qt_property!(QString; NOTIFY music_artist_changed),
     music_artist_changed: qt_signal!(),
 
+    lyrics_source: qt_property!(QString; NOTIFY lyrics_source_changed),
+    lyrics_source_changed: qt_signal!(),
+
     lyric_text: qt_property!(QString; NOTIFY lyric_text_changed),
     lyric_text_changed: qt_signal!(),
 
@@ -299,6 +302,8 @@ pub struct AppController {
             self.current_lyrics_changed();
             self.current_music_id = QString::default();
             self.current_music_id_changed();
+            self.lyrics_source = QString::default();
+            self.lyrics_source_changed();
             self.active_line_id = -1;
             self.active_line_id_changed();
             self.lyric_text = QString::default();
@@ -1161,6 +1166,7 @@ impl AppController {
         controller.next_lyric_text = QString::default();
         controller.history_search_query = QString::default();
         controller.debug_lyrics_provider_override = QString::default();
+        controller.lyrics_source = QString::default();
         controller.player = Some(player);
         controller.timeline = Some(timeline);
         controller.playlist_handle = Some(playlist);
@@ -1190,6 +1196,8 @@ impl AppController {
         self.current_lyrics_changed();
         self.current_music_id = QString::default();
         self.current_music_id_changed();
+        self.lyrics_source = QString::default();
+        self.lyrics_source_changed();
         self.active_line_id = -1;
         self.active_line_id_changed();
         self.lyric_text = QString::default();
@@ -1393,19 +1401,27 @@ impl AppController {
                         this.current_lyrics_changed();
                         this.current_music_id = QString::default();
                         this.current_music_id_changed();
+                        this.lyrics_source = QString::default();
+                        this.lyrics_source_changed();
                         this.active_line_id = -1;
                         this.active_line_id_changed();
                         this.sync_offset = 0.0;
                         this.sync_offset_changed();
                     }
                 }
-                PlayerEvent::MusicLoaded { music, lyrics } => {
+                PlayerEvent::MusicLoaded {
+                    music,
+                    lyrics,
+                    lyrics_source,
+                } => {
                     this.music_title = QString::from(music.title.as_str());
                     this.music_artist = QString::from(music.artist.unwrap_or_default().as_str());
                     this.music_title_changed();
                     this.music_artist_changed();
                     this.current_music_id = QString::from(music.id.as_str());
                     this.current_music_id_changed();
+                    this.lyrics_source = QString::from(lyrics_source.as_str());
+                    this.lyrics_source_changed();
                     this.sync_offset = music.sync_offset;
                     this.sync_offset_changed();
                     let mut list = QVariantList::default();

@@ -741,6 +741,17 @@ ApplicationWindow {
                                 visible: appController.music_artist.length > 0
                                 elide: Text.ElideRight
                             }
+
+                            Label {
+                                Layout.fillWidth: true
+                                text: appController.lyrics_source.length > 0
+                                    ? "Fonte: " + appController.lyrics_source
+                                    : ""
+                                color: operatorWindow.uiTextMuted
+                                font: operatorWindow.smallFont
+                                visible: appController.lyrics_source.length > 0
+                                elide: Text.ElideRight
+                            }
                         }
 
                         AppButton {

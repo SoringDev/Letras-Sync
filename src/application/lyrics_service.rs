@@ -27,6 +27,13 @@ pub enum DebugLyricsProvider {
     Whisper,
 }
 
+/// Resultado da busca de letras e da origem encontrada.
+#[derive(Debug, Clone)]
+pub struct LyricsFetchResult {
+    pub lines: Vec<LyricsLine>,
+    pub source: Option<&'static str>,
+}
+
 /// Resultado individual retornado pela busca do LRCLib.
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -70,7 +77,7 @@ impl LyricsService {
         audio_path: Option<&std::path::Path>,
         forced_provider: Option<DebugLyricsProvider>,
         on_status: &(dyn Fn(&str) + Send + Sync),
-    ) -> Result<Vec<LyricsLine>> {
+    ) -> Result<LyricsFetchResult> {
         let repository = LyricsRepository::new(&self.pool);
 
         if let Some(provider) = forced_provider {
@@ -90,7 +97,10 @@ impl LyricsService {
         match repository.find_by_music_id(music_id).await {
             Ok(lines) if !lines.is_empty() => {
                 if lyrics_look_like_portuguese(&lines) {
-                    return Ok(lines);
+                    return Ok(LyricsFetchResult {
+                        lines,
+                        source: Some("Cache"),
+                    });
                 }
 
                 tracing::warn!(
@@ -109,11 +119,11 @@ impl LyricsService {
             Ok(Some(lrc_content)) => {
                 let lines = lrc_parser::parse(&lrc_content, music_id);
                 if !lines.is_empty()
-                    && let Some(lines) = self
+                    && let Some(result) = self
                         .accept_portuguese_lyrics(&repository, music_id, "LRCLib", lines)
                         .await
                 {
-                    return Ok(lines);
+                    return Ok(result);
                 }
             }
             Ok(None) => {}
@@ -130,11 +140,11 @@ impl LyricsService {
                         srt_parser::parse(&vtt_content, music_id)
                     };
                     if !lines.is_empty()
-                        && let Some(lines) = self
+                        && let Some(result) = self
                             .accept_portuguese_lyrics(&repository, music_id, "YouTube", lines)
                             .await
                     {
-                        return Ok(lines);
+                        return Ok(result);
                     }
                 }
                 Ok(None) => {}
@@ -167,11 +177,11 @@ impl LyricsService {
                 .await
             {
                 Ok(Some(lines)) if !lines.is_empty() => {
-                    if let Some(lines) = self
+                    if let Some(result) = self
                         .accept_portuguese_lyrics(&repository, music_id, "LouvorJA", lines)
                         .await
                     {
-                        return Ok(lines);
+                        return Ok(result);
                     }
                 }
                 Ok(_) => {}
@@ -180,11 +190,11 @@ impl LyricsService {
 
             match self.netease.fetch_synced_lyrics(candidate, music_id).await {
                 Ok(Some(lines)) if !lines.is_empty() => {
-                    if let Some(lines) = self
+                    if let Some(result) = self
                         .accept_portuguese_lyrics(&repository, music_id, "NetEase", lines)
                         .await
                     {
-                        return Ok(lines);
+                        return Ok(result);
                     }
                 }
                 Ok(_) => {}
@@ -197,11 +207,11 @@ impl LyricsService {
             on_status("Gerando sincronização de letras via IA Whisper (isso pode demorar)...");
             match self.whisper.transcribe(path, music_id).await {
                 Ok(lines) if !lines.is_empty() => {
-                    if let Some(lines) = self
+                    if let Some(result) = self
                         .accept_portuguese_lyrics(&repository, music_id, "Whisper", lines)
                         .await
                     {
-                        return Ok(lines);
+                        return Ok(result);
                     }
                 }
                 Ok(_) => {}
@@ -210,7 +220,10 @@ impl LyricsService {
         }
 
         tracing::warn!("nenhum provider encontrou letras para a música {music_id}");
-        Ok(Vec::new())
+        Ok(LyricsFetchResult {
+            lines: Vec::new(),
+            source: None,
+        })
     }
 
     pub async fn clear_cache(&self, music_id: &str) -> Result<()> {
@@ -247,11 +260,14 @@ impl LyricsService {
         &self,
         repository: &LyricsRepository<'_>,
         music_id: &str,
-        source: &str,
+        source: &'static str,
         lines: Vec<LyricsLine>,
-    ) -> Option<Vec<LyricsLine>> {
+    ) -> Option<LyricsFetchResult> {
         if lyrics_look_like_portuguese(&lines) {
-            Some(self.persist_and_reload(repository, music_id, &lines).await)
+            Some(LyricsFetchResult {
+                lines: self.persist_and_reload(repository, music_id, &lines).await,
+                source: Some(source),
+            })
         } else {
             tracing::warn!("{source} retornou letras fora de português; ignorando");
             None
@@ -285,17 +301,17 @@ impl LyricsService {
         audio_path: Option<&std::path::Path>,
         provider: DebugLyricsProvider,
         on_status: &(dyn Fn(&str) + Send + Sync),
-    ) -> Result<Vec<LyricsLine>> {
+    ) -> Result<LyricsFetchResult> {
         match provider {
             DebugLyricsProvider::Lrclib => {
                 on_status("Depuração: buscando apenas no LRCLib...");
                 if let Some(lrc_content) = self.fetch_from_lrclib(music_id).await? {
                     let lines = lrc_parser::parse(&lrc_content, music_id);
-                    if let Some(lines) = self
+                    if let Some(result) = self
                         .accept_portuguese_lyrics(repository, music_id, "LRCLib", lines)
                         .await
                     {
-                        return Ok(lines);
+                        return Ok(result);
                     }
                 }
             }
@@ -309,11 +325,11 @@ impl LyricsService {
                     } else {
                         srt_parser::parse(&vtt_content, music_id)
                     };
-                    if let Some(lines) = self
+                    if let Some(result) = self
                         .accept_portuguese_lyrics(repository, music_id, "YouTube", lines)
                         .await
                     {
-                        return Ok(lines);
+                        return Ok(result);
                     }
                 }
             }
@@ -334,11 +350,11 @@ impl LyricsService {
                 for candidate in extract_song_title_candidates(&raw_title) {
                     match self.netease.fetch_synced_lyrics(&candidate, music_id).await {
                         Ok(Some(lines)) if !lines.is_empty() => {
-                            if let Some(lines) = self
+                            if let Some(result) = self
                                 .accept_portuguese_lyrics(repository, music_id, "NetEase", lines)
                                 .await
                             {
-                                return Ok(lines);
+                                return Ok(result);
                             }
                         }
                         Ok(_) => {}
@@ -353,15 +369,24 @@ impl LyricsService {
                 if let Some(path) = audio_path {
                     let lines = self.whisper.transcribe(path, music_id).await?;
                     if lines.is_empty() {
-                        return Ok(Vec::new());
+                        return Ok(LyricsFetchResult {
+                            lines: Vec::new(),
+                            source: None,
+                        });
                     }
 
-                    return Ok(self.persist_and_reload(repository, music_id, &lines).await);
+                    return Ok(LyricsFetchResult {
+                        lines: self.persist_and_reload(repository, music_id, &lines).await,
+                        source: Some("Whisper"),
+                    });
                 }
             }
         }
 
-        Ok(Vec::new())
+        Ok(LyricsFetchResult {
+            lines: Vec::new(),
+            source: None,
+        })
     }
 }
 
