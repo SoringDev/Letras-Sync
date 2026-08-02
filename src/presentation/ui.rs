@@ -124,6 +124,26 @@ pub struct AppController {
     font_color: qt_property!(QString; NOTIFY style_changed),
     background_color: qt_property!(QString; NOTIFY style_changed),
     projector_screen_index: qt_property!(i32; NOTIFY style_changed),
+    projection_font_family: qt_property!(QString; NOTIFY style_changed),
+    projection_font_size: qt_property!(u32; NOTIFY style_changed),
+    projection_font_weight: qt_property!(u32; NOTIFY style_changed),
+    projection_letter_spacing: qt_property!(f64; NOTIFY style_changed),
+    projection_line_height_multiplier: qt_property!(f64; NOTIFY style_changed),
+    projection_dynamic_font_scaling: qt_property!(bool; NOTIFY style_changed),
+    projection_min_font_size: qt_property!(u32; NOTIFY style_changed),
+    projection_max_font_multiplier: qt_property!(f64; NOTIFY style_changed),
+    projection_margin_horizontal: qt_property!(u32; NOTIFY style_changed),
+    projection_margin_vertical: qt_property!(u32; NOTIFY style_changed),
+    projection_horizontal_alignment: qt_property!(QString; NOTIFY style_changed),
+    projection_vertical_alignment: qt_property!(QString; NOTIFY style_changed),
+    projection_font_color: qt_property!(QString; NOTIFY style_changed),
+    projection_background_color: qt_property!(QString; NOTIFY style_changed),
+    projection_shadow_enabled: qt_property!(bool; NOTIFY style_changed),
+    projection_shadow_color: qt_property!(QString; NOTIFY style_changed),
+    projection_shadow_offset_x: qt_property!(i32; NOTIFY style_changed),
+    projection_shadow_offset_y: qt_property!(i32; NOTIFY style_changed),
+    projection_fade_duration_ms: qt_property!(u32; NOTIFY style_changed),
+    projection_fade_animation_enabled: qt_property!(bool; NOTIFY style_changed),
     style_changed: qt_signal!(),
 
     history: qt_property!(QVariantList; NOTIFY history_changed),
@@ -664,6 +684,8 @@ pub struct AppController {
         fn set_font_size(&mut self, value: u32) {
             self.font_size = value;
             self.settings.font_size = value;
+            self.projection_font_size = value;
+            self.settings.projection.font_size = value;
             self.style_changed();
             self.persist_settings();
         }
@@ -673,6 +695,8 @@ pub struct AppController {
         fn set_font_family(&mut self, value: QString) {
             self.font_family = value.clone();
             self.settings.font_family = value.to_string();
+            self.projection_font_family = value.clone();
+            self.settings.projection.font_family = value.to_string();
             self.style_changed();
             self.persist_settings();
         }
@@ -682,6 +706,8 @@ pub struct AppController {
         fn set_font_color(&mut self, value: QString) {
             self.font_color = value.clone();
             self.settings.font_color = value.to_string();
+            self.projection_font_color = value.clone();
+            self.settings.projection.font_color = value.to_string();
             self.style_changed();
             self.persist_settings();
         }
@@ -691,6 +717,169 @@ pub struct AppController {
         fn set_background_color(&mut self, value: QString) {
             self.background_color = value.clone();
             self.settings.background_color = value.to_string();
+            self.projection_background_color = value.clone();
+            self.settings.projection.background_color = value.to_string();
+            self.style_changed();
+            self.persist_settings();
+        }
+    ),
+
+    set_projection_font_size: qt_method!(
+        fn set_projection_font_size(&mut self, value: u32) {
+            self.font_size = value;
+            self.settings.font_size = value;
+            self.projection_font_size = value;
+            self.settings.projection.font_size = value;
+            self.style_changed();
+            self.persist_settings();
+        }
+    ),
+
+    set_projection_font_family: qt_method!(
+        fn set_projection_font_family(&mut self, value: QString) {
+            self.font_family = value.clone();
+            self.settings.font_family = value.to_string();
+            self.projection_font_family = value.clone();
+            self.settings.projection.font_family = value.to_string();
+            self.style_changed();
+            self.persist_settings();
+        }
+    ),
+
+    set_projection_font_weight: qt_method!(
+        fn set_projection_font_weight(&mut self, value: u32) {
+            self.projection_font_weight = value;
+            self.settings.projection.font_weight = value;
+            self.style_changed();
+            self.persist_settings();
+        }
+    ),
+
+    set_projection_letter_spacing: qt_method!(
+        fn set_projection_letter_spacing(&mut self, value: f64) {
+            self.projection_letter_spacing = value;
+            self.settings.projection.letter_spacing = value;
+            self.style_changed();
+            self.persist_settings();
+        }
+    ),
+
+    set_projection_line_height_multiplier: qt_method!(
+        fn set_projection_line_height_multiplier(&mut self, value: f64) {
+            self.projection_line_height_multiplier = value;
+            self.settings.projection.line_height_multiplier = value;
+            self.style_changed();
+            self.persist_settings();
+        }
+    ),
+
+    set_projection_margin_horizontal: qt_method!(
+        fn set_projection_margin_horizontal(&mut self, value: u32) {
+            self.projection_margin_horizontal = value;
+            self.settings.projection.margin_horizontal = value;
+            self.style_changed();
+            self.persist_settings();
+        }
+    ),
+
+    set_projection_margin_vertical: qt_method!(
+        fn set_projection_margin_vertical(&mut self, value: u32) {
+            self.projection_margin_vertical = value;
+            self.settings.projection.margin_vertical = value;
+            self.style_changed();
+            self.persist_settings();
+        }
+    ),
+
+    set_projection_horizontal_alignment: qt_method!(
+        fn set_projection_horizontal_alignment(&mut self, value: QString) {
+            self.projection_horizontal_alignment = value.clone();
+            self.settings.projection.horizontal_alignment = value.to_string();
+            self.style_changed();
+            self.persist_settings();
+        }
+    ),
+
+    set_projection_vertical_alignment: qt_method!(
+        fn set_projection_vertical_alignment(&mut self, value: QString) {
+            self.projection_vertical_alignment = value.clone();
+            self.settings.projection.vertical_alignment = value.to_string();
+            self.style_changed();
+            self.persist_settings();
+        }
+    ),
+
+    set_projection_font_color: qt_method!(
+        fn set_projection_font_color(&mut self, value: QString) {
+            self.font_color = value.clone();
+            self.settings.font_color = value.to_string();
+            self.projection_font_color = value.clone();
+            self.settings.projection.font_color = value.to_string();
+            self.style_changed();
+            self.persist_settings();
+        }
+    ),
+
+    set_projection_background_color: qt_method!(
+        fn set_projection_background_color(&mut self, value: QString) {
+            self.background_color = value.clone();
+            self.settings.background_color = value.to_string();
+            self.projection_background_color = value.clone();
+            self.settings.projection.background_color = value.to_string();
+            self.style_changed();
+            self.persist_settings();
+        }
+    ),
+
+    set_projection_shadow_enabled: qt_method!(
+        fn set_projection_shadow_enabled(&mut self, value: bool) {
+            self.projection_shadow_enabled = value;
+            self.settings.projection.shadow_enabled = value;
+            self.style_changed();
+            self.persist_settings();
+        }
+    ),
+
+    set_projection_shadow_color: qt_method!(
+        fn set_projection_shadow_color(&mut self, value: QString) {
+            self.projection_shadow_color = value.clone();
+            self.settings.projection.shadow_color = value.to_string();
+            self.style_changed();
+            self.persist_settings();
+        }
+    ),
+
+    set_projection_shadow_offset_x: qt_method!(
+        fn set_projection_shadow_offset_x(&mut self, value: i32) {
+            self.projection_shadow_offset_x = value;
+            self.settings.projection.shadow_offset_x = value;
+            self.style_changed();
+            self.persist_settings();
+        }
+    ),
+
+    set_projection_shadow_offset_y: qt_method!(
+        fn set_projection_shadow_offset_y(&mut self, value: i32) {
+            self.projection_shadow_offset_y = value;
+            self.settings.projection.shadow_offset_y = value;
+            self.style_changed();
+            self.persist_settings();
+        }
+    ),
+
+    set_projection_fade_duration_ms: qt_method!(
+        fn set_projection_fade_duration_ms(&mut self, value: u32) {
+            self.projection_fade_duration_ms = value;
+            self.settings.projection.fade_duration_ms = value;
+            self.style_changed();
+            self.persist_settings();
+        }
+    ),
+
+    set_projection_fade_animation_enabled: qt_method!(
+        fn set_projection_fade_animation_enabled(&mut self, value: bool) {
+            self.projection_fade_animation_enabled = value;
+            self.settings.projection.fade_animation_enabled = value;
             self.style_changed();
             self.persist_settings();
         }
@@ -732,6 +921,30 @@ impl AppController {
         controller.background_color = QString::from(settings.background_color.as_str());
         controller.projector_screen_index =
             settings.projector_monitor.map(|m| m as i32).unwrap_or(-1);
+        controller.projection_font_family = QString::from(settings.projection.font_family.as_str());
+        controller.projection_font_size = settings.projection.font_size;
+        controller.projection_font_weight = settings.projection.font_weight;
+        controller.projection_letter_spacing = settings.projection.letter_spacing;
+        controller.projection_line_height_multiplier = settings.projection.line_height_multiplier;
+        controller.projection_dynamic_font_scaling = settings.projection.dynamic_font_scaling;
+        controller.projection_min_font_size = settings.projection.min_font_size;
+        controller.projection_max_font_multiplier = settings.projection.max_font_multiplier;
+        controller.projection_margin_horizontal = settings.projection.margin_horizontal;
+        controller.projection_margin_vertical = settings.projection.margin_vertical;
+        controller.projection_horizontal_alignment =
+            QString::from(settings.projection.horizontal_alignment.as_str());
+        controller.projection_vertical_alignment =
+            QString::from(settings.projection.vertical_alignment.as_str());
+        controller.projection_font_color = QString::from(settings.projection.font_color.as_str());
+        controller.projection_background_color =
+            QString::from(settings.projection.background_color.as_str());
+        controller.projection_shadow_enabled = settings.projection.shadow_enabled;
+        controller.projection_shadow_color =
+            QString::from(settings.projection.shadow_color.as_str());
+        controller.projection_shadow_offset_x = settings.projection.shadow_offset_x;
+        controller.projection_shadow_offset_y = settings.projection.shadow_offset_y;
+        controller.projection_fade_duration_ms = settings.projection.fade_duration_ms;
+        controller.projection_fade_animation_enabled = settings.projection.fade_animation_enabled;
         controller.clear_screen = false;
         controller.next_lyric_text = QString::default();
         controller.history_search_query = QString::default();

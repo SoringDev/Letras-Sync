@@ -711,11 +711,7 @@ mod tests {
         };
         let youtube = Arc::new(YoutubeService::new());
         let whisper = Arc::new(WhisperService::new());
-        let settings = match crate::shared::config::load_settings() {
-            Ok(settings) => settings,
-            Err(_) => return None,
-        };
-        let cache_path = PathBuf::from(settings.cache_path.clone());
+        let cache_path = std::env::temp_dir();
         let lyrics = Arc::new(LyricsService::new(
             pool.clone(),
             Arc::clone(&youtube),
@@ -1037,12 +1033,8 @@ mod tests {
             return;
         };
 
-        let settings = match crate::shared::config::load_settings() {
-            Ok(settings) => settings,
-            Err(_) => return,
-        };
-        let cache_dir = std::path::Path::new(&settings.cache_path);
-        if tokio::fs::create_dir_all(cache_dir).await.is_err() {
+        let cache_dir = std::env::temp_dir();
+        if tokio::fs::create_dir_all(&cache_dir).await.is_err() {
             return;
         }
 

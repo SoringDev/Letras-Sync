@@ -117,7 +117,7 @@ ApplicationWindow {
     Shortcut {
         sequence: "Ctrl+="
         context: Qt.WindowShortcut
-        onActivated: appController.set_font_size(appController.font_size + 2)
+        onActivated: appController.set_font_size(Math.min(appController.font_size + 2, 150))
     }
 
     Shortcut {
@@ -749,7 +749,7 @@ ApplicationWindow {
                 RowLayout {
                     Label { text: "Tamanho da fonte:" }
                     SpinBox {
-                        from: 12; to: 120; value: appController.font_size
+                        from: 12; to: 150; value: appController.font_size
                         onValueModified: appController.set_font_size(value)
                     }
                 }
@@ -786,18 +786,187 @@ ApplicationWindow {
                     }
                 }
 
+                Label {
+                    text: "Configurações da projeção"
+                    font.bold: true
+                }
+
+                RowLayout {
+                    Layout.fillWidth: true
+                    spacing: 8
+
+                    Label { text: "Peso da fonte:" }
+                    SpinBox {
+                        from: 100; to: 900; stepSize: 100
+                        value: appController.projection_font_weight
+                        onValueModified: appController.set_projection_font_weight(value)
+                    }
+                }
+
+                RowLayout {
+                    Layout.fillWidth: true
+                    spacing: 8
+
+                    Label { text: "Espaçamento entre letras:" }
+                    TextField {
+                        Layout.fillWidth: true
+                        text: appController.projection_letter_spacing.toString()
+                        onEditingFinished: appController.set_projection_letter_spacing(
+                            operatorWindow.parseNumber(text, appController.projection_letter_spacing)
+                        )
+                    }
+                }
+
+                RowLayout {
+                    Layout.fillWidth: true
+                    spacing: 8
+
+                    Label { text: "Altura da linha:" }
+                    TextField {
+                        Layout.fillWidth: true
+                        text: appController.projection_line_height_multiplier.toString()
+                        onEditingFinished: appController.set_projection_line_height_multiplier(
+                            operatorWindow.parseNumber(text, appController.projection_line_height_multiplier)
+                        )
+                    }
+                }
+
+                RowLayout {
+                    Layout.fillWidth: true
+                    spacing: 8
+
+                    Label { text: "Margem horizontal:" }
+                    SpinBox {
+                        from: 0; to: 500; value: appController.projection_margin_horizontal
+                        onValueModified: appController.set_projection_margin_horizontal(value)
+                    }
+                }
+
+                RowLayout {
+                    Layout.fillWidth: true
+                    spacing: 8
+
+                    Label { text: "Margem vertical:" }
+                    SpinBox {
+                        from: 0; to: 300; value: appController.projection_margin_vertical
+                        onValueModified: appController.set_projection_margin_vertical(value)
+                    }
+                }
+
+                RowLayout {
+                    Layout.fillWidth: true
+                    spacing: 8
+
+                    Label { text: "Alinhamento horizontal:" }
+                    ComboBox {
+                        model: ["center", "left", "right"]
+                        currentIndex: appController.projection_horizontal_alignment === "left"
+                            ? 1
+                            : appController.projection_horizontal_alignment === "right"
+                                ? 2
+                                : 0
+                        onActivated: appController.set_projection_horizontal_alignment(currentText)
+                    }
+                }
+
+                RowLayout {
+                    Layout.fillWidth: true
+                    spacing: 8
+
+                    Label { text: "Alinhamento vertical:" }
+                    ComboBox {
+                        model: ["center", "top", "bottom"]
+                        currentIndex: appController.projection_vertical_alignment === "top"
+                            ? 1
+                            : appController.projection_vertical_alignment === "bottom"
+                                ? 2
+                                : 0
+                        onActivated: appController.set_projection_vertical_alignment(currentText)
+                    }
+                }
+
+                RowLayout {
+                    Layout.fillWidth: true
+                    spacing: 8
+
+                    Label { text: "Sombra:" }
+                    CheckBox {
+                        checked: appController.projection_shadow_enabled
+                        onToggled: appController.set_projection_shadow_enabled(checked)
+                    }
+                }
+
+                RowLayout {
+                    Layout.fillWidth: true
+                    spacing: 8
+
+                    Label { text: "Cor da sombra:" }
+                    TextField {
+                        Layout.fillWidth: true
+                        text: appController.projection_shadow_color
+                        onEditingFinished: appController.set_projection_shadow_color(text)
+                    }
+                }
+
+                RowLayout {
+                    Layout.fillWidth: true
+                    spacing: 8
+
+                    Label { text: "Offset da sombra X:" }
+                    SpinBox {
+                        from: -100; to: 100; value: appController.projection_shadow_offset_x
+                        onValueModified: appController.set_projection_shadow_offset_x(value)
+                    }
+                }
+
+                RowLayout {
+                    Layout.fillWidth: true
+                    spacing: 8
+
+                    Label { text: "Offset da sombra Y:" }
+                    SpinBox {
+                        from: -100; to: 100; value: appController.projection_shadow_offset_y
+                        onValueModified: appController.set_projection_shadow_offset_y(value)
+                    }
+                }
+
+                RowLayout {
+                    Layout.fillWidth: true
+                    spacing: 8
+
+                    Label { text: "Duração do fade (ms):" }
+                    SpinBox {
+                        from: 0; to: 5000; stepSize: 10
+                        value: appController.projection_fade_duration_ms
+                        onValueModified: appController.set_projection_fade_duration_ms(value)
+                    }
+                }
+
+                RowLayout {
+                    Layout.fillWidth: true
+                    spacing: 8
+
+                    Label { text: "Animação de fade:" }
+                    CheckBox {
+                        checked: appController.projection_fade_animation_enabled
+                        onToggled: appController.set_projection_fade_animation_enabled(checked)
+                    }
+                }
+
                 Rectangle {
                     Layout.fillWidth: true
                     height: 80
-                    color: appController.background_color
+                    color: appController.projection_background_color
                     Text {
                         anchors.centerIn: parent
                         text: appController.lyric_text.length > 0
                             ? appController.lyric_text
                             : "Grande é o Senhor"
-                        color: appController.font_color
-                        font.pixelSize: Math.min(appController.font_size, 32)
-                        font.family: appController.font_family
+                        color: appController.projection_font_color
+                        font.pixelSize: Math.min(appController.projection_font_size, 32)
+                        font.family: appController.projection_font_family
+                        font.weight: appController.projection_font_weight
+                        font.letterSpacing: appController.projection_letter_spacing
                         horizontalAlignment: Text.AlignHCenter
                         wrapMode: Text.WordWrap
                     }
@@ -817,5 +986,10 @@ ApplicationWindow {
         var mins = Math.floor(total / 60);
         var secs = total % 60;
         return mins + ":" + (secs < 10 ? "0" + secs : secs);
+    }
+
+    function parseNumber(text, fallback) {
+        var value = parseFloat(text);
+        return isNaN(value) ? fallback : value;
     }
 }

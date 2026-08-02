@@ -112,11 +112,12 @@ mod tests {
 
         let settings = Settings {
             font_size: 72,
-            font_family: "Serif".to_string(),
+            font_family: "Inter".to_string(),
             font_color: "#123456".to_string(),
             background_color: "#654321".to_string(),
             projector_monitor: Some(2),
             cache_path: "/tmp/custom-cache".to_string(),
+            projection: crate::domain::projection_config::ProjectionConfig::default(),
             volume: 80,
         };
 

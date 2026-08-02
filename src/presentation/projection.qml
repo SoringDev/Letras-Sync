@@ -5,7 +5,6 @@ import QtQuick.Window
 Window {
     id: projectionWindow
 
-    // Índice do monitor com fallback seguro para a tela primária.
     readonly property int screenIndex: {
         var idx = appController.projector_screen_index;
         var screens = Qt.application.screens;
@@ -15,42 +14,121 @@ Window {
     }
 
     flags: Qt.FramelessWindowHint
-    color: appController.background_color
+    color: appController.projection_background_color
     screen: Qt.application.screens[screenIndex]
     visibility: appController.projection_visible ? Window.FullScreen : Window.Hidden
 
-    ColumnLayout {
-        anchors.fill: parent
-        anchors.margins: 32
-        spacing: 12
+    Item {
+        id: textBlock
+        anchors.centerIn: parent
+        width: Math.max(0, parent.width - (appController.projection_margin_horizontal * 2))
+        height: Math.max(0, parent.height - (appController.projection_margin_vertical * 2))
 
-        Item {
-            Layout.fillHeight: true
+        property bool lineVisible: true
+
+        function hAlign(value) {
+            switch (value) {
+            case "left":
+                return Text.AlignLeft;
+            case "right":
+                return Text.AlignRight;
+            default:
+                return Text.AlignHCenter;
+            }
+        }
+
+        function vAlign(value) {
+            switch (value) {
+            case "top":
+                return Text.AlignTop;
+            case "bottom":
+                return Text.AlignBottom;
+            default:
+                return Text.AlignVCenter;
+            }
+        }
+
+        function displayText(value) {
+            return String(value).toUpperCase();
+        }
+
+        Connections {
+            target: appController
+
+            function onLyricTextChanged() {
+                if (!appController.clear_screen && appController.lyric_text.length > 0) {
+                    textBlock.lineVisible = false;
+                    fadeTimer.restart();
+                }
+            }
+
+            function onClearScreenChanged() {
+                if (appController.clear_screen) {
+                    textBlock.lineVisible = false;
+                } else {
+                    textBlock.lineVisible = true;
+                }
+            }
+        }
+
+        Timer {
+            id: fadeTimer
+            interval: 1
+            repeat: false
+            onTriggered: textBlock.lineVisible = true
         }
 
         Text {
-            Layout.fillWidth: true
-            horizontalAlignment: Text.AlignHCenter
+            id: shadowText
+            anchors.fill: parent
+            anchors.leftMargin: appController.projection_shadow_enabled ? appController.projection_shadow_offset_x : 0
+            anchors.topMargin: appController.projection_shadow_enabled ? appController.projection_shadow_offset_y : 0
+            text: appController.clear_screen ? "" : textBlock.displayText(appController.lyric_text)
+            color: appController.projection_shadow_color
+            opacity: appController.clear_screen
+                     ? 0
+                     : (textBlock.lineVisible ? 1 : 0)
+            visible: appController.projection_shadow_enabled
             wrapMode: Text.WordWrap
-            text: appController.clear_screen ? "" : appController.lyric_text.toUpperCase()
-            color: appController.font_color
-            font.pixelSize: appController.font_size
-            font.family: appController.font_family
+            horizontalAlignment: textBlock.hAlign(appController.projection_horizontal_alignment)
+            verticalAlignment: textBlock.vAlign(appController.projection_vertical_alignment)
+            font.family: appController.projection_font_family
+            font.pixelSize: appController.projection_font_size
+            font.weight: appController.projection_font_weight
+            font.letterSpacing: appController.projection_letter_spacing
+            lineHeightMode: Text.ProportionalHeight
+            lineHeight: appController.projection_line_height_multiplier
+            style: Text.Outline
+            styleColor: appController.projection_shadow_color
+
+            Behavior on opacity {
+                enabled: appController.projection_fade_animation_enabled
+                NumberAnimation { duration: appController.projection_fade_duration_ms }
+            }
         }
 
         Text {
-            Layout.fillWidth: true
-            horizontalAlignment: Text.AlignHCenter
+            id: lyricText
+            anchors.fill: parent
+            text: appController.clear_screen ? "" : textBlock.displayText(appController.lyric_text)
+            color: appController.projection_font_color
+            opacity: appController.clear_screen
+                     ? 0
+                     : (textBlock.lineVisible ? 1 : 0)
             wrapMode: Text.WordWrap
-            text: appController.clear_screen ? "" : appController.next_lyric_text.toUpperCase()
-            color: "#D0D0D0"
-            opacity: 0.72
-            font.pixelSize: Math.max(12, Math.round(appController.font_size * 0.6))
-            font.family: appController.font_family
-        }
+            horizontalAlignment: textBlock.hAlign(appController.projection_horizontal_alignment)
+            verticalAlignment: textBlock.vAlign(appController.projection_vertical_alignment)
+            font.family: appController.projection_font_family
+            font.pixelSize: appController.projection_font_size
+            font.weight: appController.projection_font_weight
+            font.letterSpacing: appController.projection_letter_spacing
+            lineHeightMode: Text.ProportionalHeight
+            lineHeight: appController.projection_line_height_multiplier
 
-        Item {
-            Layout.fillHeight: true
+            Behavior on opacity {
+                enabled: appController.projection_fade_animation_enabled
+                NumberAnimation { duration: appController.projection_fade_duration_ms }
+            }
         }
     }
 }
