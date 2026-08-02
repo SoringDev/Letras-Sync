@@ -61,6 +61,7 @@ async fn main() -> anyhow::Result<()> {
         youtube,
         lyrics,
         pool.clone(),
+        PathBuf::from(settings.cache_path.clone()),
         settings.volume as i64,
     );
     let timeline = Timeline::new(Arc::clone(&player));

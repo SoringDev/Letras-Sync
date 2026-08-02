@@ -168,6 +168,7 @@ pub struct Player {
     youtube_service: Arc<YoutubeService>,
     lyrics_service: Arc<LyricsService>,
     pool: SqlitePool,
+    cache_path: PathBuf,
     state: Arc<RwLock<PlayerState>>,
     event_tx: broadcast::Sender<PlayerEvent>,
 }
@@ -179,6 +180,7 @@ impl Player {
         youtube_service: Arc<YoutubeService>,
         lyrics_service: Arc<LyricsService>,
         pool: SqlitePool,
+        cache_path: PathBuf,
         volume: i64,
     ) -> Arc<Self> {
         let (event_tx, _) = broadcast::channel(EVENT_CHANNEL_CAPACITY);
@@ -188,6 +190,7 @@ impl Player {
             youtube_service,
             lyrics_service,
             pool,
+            cache_path,
             state: Arc::new(RwLock::new(PlayerState::default())),
             event_tx,
         });
@@ -244,14 +247,12 @@ impl Player {
 
         self.set_status(PlaybackState::Loading).await;
 
-        let local_path = self.ensure_cached_audio(&canonical_url, &video_id).await?;
-
         self.emit(PlayerEvent::LoadingStatus(
             "Buscando legendas sincronizadas...".to_string(),
         ));
         let lyrics_service = self.lyrics_service.clone();
-        let lyrics = lyrics_service
-            .get_lyrics(&music_id, &canonical_url, Some(&local_path), &|status| {
+        let mut lyrics = lyrics_service
+            .get_lyrics(&music_id, &canonical_url, None, &|status| {
                 self.emit(PlayerEvent::LoadingStatus(status.to_string()));
             })
             .await
@@ -259,6 +260,27 @@ impl Player {
                 tracing::warn!("falha ao obter as letras da música {video_id}: {e}");
                 Vec::new()
             });
+
+        let local_path = if !lyrics.is_empty() {
+            self.ensure_cached_audio(&canonical_url, &video_id).await?
+        } else {
+            let local_path = self.ensure_cached_audio(&canonical_url, &video_id).await?;
+
+            self.emit(PlayerEvent::LoadingStatus(
+                "Buscando legendas sincronizadas...".to_string(),
+            ));
+            lyrics = lyrics_service
+                .get_lyrics(&music_id, &canonical_url, Some(&local_path), &|status| {
+                    self.emit(PlayerEvent::LoadingStatus(status.to_string()));
+                })
+                .await
+                .unwrap_or_else(|e| {
+                    tracing::warn!("falha ao obter as letras da música {video_id}: {e}");
+                    Vec::new()
+                });
+
+            local_path
+        };
 
         self.audio_engine.load(&local_path.to_string_lossy())?;
         self.audio_engine.pause()?;
@@ -444,8 +466,7 @@ impl Player {
     /// arquivo é reutilizado; caso contrário, dispara o download via yt-dlp.
     /// Em falha de download, reverte o estado para `Stopped` e propaga o erro.
     async fn ensure_cached_audio(&self, url: &str, video_id: &str) -> Result<std::path::PathBuf> {
-        let settings = crate::shared::config::load_settings()?;
-        let cache_dir = std::path::Path::new(&settings.cache_path);
+        let cache_dir = self.cache_path.as_path();
 
         self.emit(PlayerEvent::LoadingStatus(
             "Verificando arquivos de áudio locais...".to_string(),
@@ -690,19 +711,24 @@ mod tests {
         };
         let youtube = Arc::new(YoutubeService::new());
         let whisper = Arc::new(WhisperService::new());
+        let settings = match crate::shared::config::load_settings() {
+            Ok(settings) => settings,
+            Err(_) => return None,
+        };
+        let cache_path = PathBuf::from(settings.cache_path.clone());
         let lyrics = Arc::new(LyricsService::new(
             pool.clone(),
             Arc::clone(&youtube),
             Arc::clone(&whisper),
-            std::env::temp_dir(),
+            cache_path.clone(),
         ));
-        let settings = crate::domain::settings::Settings::default();
         Some(Player::new(
             audio_engine,
             youtube,
             lyrics,
             pool,
-            settings.volume as i64,
+            cache_path,
+            crate::domain::settings::Settings::default().volume as i64,
         ))
     }
 

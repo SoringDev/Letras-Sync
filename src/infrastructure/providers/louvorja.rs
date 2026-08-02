@@ -34,7 +34,13 @@ enum CatalogIdMusic {
 
 #[derive(Debug, Deserialize)]
 struct MusicResponse {
-    lyrics: Option<Vec<LyricItem>>,
+    data: MusicDetail,
+}
+
+#[derive(Debug, Deserialize)]
+struct MusicDetail {
+    url_music: Option<String>,
+    lyric: Option<Vec<LyricItem>>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -90,7 +96,7 @@ impl LouvorJaProvider {
             .await
             .context("falha ao desserializar o detalhe do LouvorJA")?;
 
-        let Some(lyrics) = detail.lyrics else {
+        let Some(lyrics) = detail.data.lyric else {
             return Ok(None);
         };
 
@@ -98,8 +104,67 @@ impl LouvorJaProvider {
         if lines.is_empty() {
             Ok(None)
         } else {
+            if let Some(audio_url) = detail.data.url_music.as_deref().map(str::trim)
+                && !audio_url.is_empty()
+                && let Err(e) =
+                    download_official_audio(&client, cache_path, music_id, audio_url).await
+            {
+                tracing::warn!("louvorja: falha ao baixar áudio oficial: {e}");
+            }
+
             Ok(Some(lines))
         }
+    }
+}
+
+async fn download_official_audio(
+    client: &reqwest::Client,
+    cache_path: &Path,
+    music_id: &str,
+    audio_url: &str,
+) -> Result<()> {
+    let destination = cache_path.join(format!("{music_id}.mp3"));
+
+    let bytes = client
+        .get(audio_url)
+        .send()
+        .await
+        .context("louvorja: falha ao baixar áudio oficial")?
+        .error_for_status()
+        .context("louvorja: áudio oficial retornou erro")?
+        .bytes()
+        .await
+        .context("louvorja: falha ao ler bytes do áudio oficial")?;
+
+    if !cache_path.as_os_str().is_empty() {
+        tokio::fs::create_dir_all(cache_path).await.ok();
+    }
+
+    tokio::fs::write(&destination, bytes)
+        .await
+        .with_context(|| {
+            format!(
+                "louvorja: falha ao salvar áudio oficial em {}",
+                destination.display()
+            )
+        })?;
+
+    remove_previous_audio_cache_files(cache_path, music_id, &destination).await;
+
+    tracing::info!(
+        "louvorja: áudio oficial baixado com sucesso em {}",
+        destination.display()
+    );
+    Ok(())
+}
+
+async fn remove_previous_audio_cache_files(cache_path: &Path, music_id: &str, keep: &Path) {
+    for extension in ["webm", "m4a"] {
+        let candidate = cache_path.join(format!("{music_id}.{extension}"));
+        if candidate == keep {
+            continue;
+        }
+        let _ = tokio::fs::remove_file(&candidate).await;
     }
 }
 
@@ -333,5 +398,38 @@ mod tests {
 
         let entry = find_best_match(&catalog, "O Sábado Chegou (Lyrics)").expect("match");
         assert_eq!(entry.id, "2");
+    }
+
+    #[test]
+    fn deserializes_detail_response_with_nested_data_and_lyric_field() {
+        let json = r#"
+        {
+            "data": {
+                "id_music": 794,
+                "name": "O Sábado Chegou",
+                "url_music": "https://example.com/o-sabado-chegou.mp3",
+                "lyric": [
+                    {
+                        "id_lyric": 10909,
+                        "lyric": "Lento e calmo foge o dia",
+                        "time": "00:00:24"
+                    }
+                ]
+            }
+        }
+        "#;
+
+        let response: MusicResponse = serde_json::from_str(json).expect("desserializar");
+        assert_eq!(
+            response.data.url_music.as_deref(),
+            Some("https://example.com/o-sabado-chegou.mp3")
+        );
+        let Some(lyrics) = response.data.lyric else {
+            panic!("lyric ausente");
+        };
+
+        assert_eq!(lyrics.len(), 1);
+        assert_eq!(lyrics[0].lyric.as_deref(), Some("Lento e calmo foge o dia"));
+        assert_eq!(lyrics[0].time, "00:00:24");
     }
 }
